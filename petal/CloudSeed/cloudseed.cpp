@@ -20,9 +20,12 @@ using namespace terrarium;  // This is important for mapping the correct control
 // Constants
 constexpr size_t AUDIO_BUFFER_SIZE = 48;
 constexpr float OUTPUT_VOLUME_BOOST = 1.2f;
-constexpr int MAX_PRESET_INDEX = 7;
 constexpr int NUM_SWITCHES = 4;
 constexpr float FLOAT_EPSILON = 1e-6f;
+
+// Increment this when changing the settings struct so the software will know
+// to reset to defaults if this ever changes.
+#define SETTINGS_VERSION 1
 
 // Switch indices for delay line control
 static const int DELAY_LINE_SWITCHES[NUM_SWITCHES] = {
@@ -30,6 +33,83 @@ static const int DELAY_LINE_SWITCHES[NUM_SWITCHES] = {
     Terrarium::SWITCH_2,
     Terrarium::SWITCH_3,
     Terrarium::SWITCH_4
+};
+
+// LED blink pattern configuration (defined early for use in preset config)
+struct BlinkPattern {
+    int numBlinks;           // Number of times to blink
+    uint32_t onDurationMs;   // How long LED stays on per blink
+    uint32_t offDurationMs;  // How long LED stays off between blinks
+    uint32_t pauseAfterMs;   // Pause after all blinks complete
+};
+
+// Preset configuration structure
+struct PresetConfig {
+    void (CloudSeed::ReverbController::*initFunction)();  // Function pointer to init method
+    BlinkPattern blinkPattern;
+    const char* name;  // Preset name for reference
+};
+
+// Array of all available presets
+// To add/remove presets, simply modify this array - no other code changes needed
+const PresetConfig PRESETS[] = {
+    {
+        .initFunction = &CloudSeed::ReverbController::initFactoryChorus,
+        .blinkPattern = {.numBlinks = 1, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+        .name = "Chorus"
+    },
+    {
+        .initFunction = &CloudSeed::ReverbController::initFactoryDullEchos,
+        .blinkPattern = {.numBlinks = 2, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+        .name = "Dull Echos"
+    },
+    {
+        .initFunction = &CloudSeed::ReverbController::initFactoryHyperplane,
+        .blinkPattern = {.numBlinks = 3, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+        .name = "Hyperplane"
+    },
+    {
+        .initFunction = &CloudSeed::ReverbController::initFactoryMediumSpace,
+        .blinkPattern = {.numBlinks = 4, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+        .name = "Medium Space"
+    },
+    {
+        .initFunction = &CloudSeed::ReverbController::initFactoryNoiseInTheHallway,
+        .blinkPattern = {.numBlinks = 5, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+        .name = "Noise in the Hallway"
+    },
+    {
+        .initFunction = &CloudSeed::ReverbController::initFactoryRubiKaFields,
+        .blinkPattern = {.numBlinks = 6, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+        .name = "Rubi Ka Fields"
+    },
+    {
+        .initFunction = &CloudSeed::ReverbController::initFactorySmallRoom,
+        .blinkPattern = {.numBlinks = 7, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+        .name = "Small Room"
+    },
+    {
+        .initFunction = &CloudSeed::ReverbController::initFactory90sAreBack,
+        .blinkPattern = {.numBlinks = 8, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+        .name = "90s Are Back"
+    }
+};
+
+constexpr int NUM_PRESETS = sizeof(PRESETS) / sizeof(PRESETS[0]);
+
+// Persistent Settings
+struct Settings {
+    int version;        // Version of the settings struct
+    int currentPreset;  // Currently selected preset (0-7)
+
+    // Overloading the != operator
+    // This is necessary as this operator is used in the PersistentStorage source code
+    bool operator!=(const Settings& a) const {
+        return !(
+            a.version == version &&
+            a.currentPreset == currentPreset
+        );
+    }
 };
 
 // Global state structure
@@ -54,6 +134,9 @@ struct PedalState {
     // State
     bool bypass;
     int currentPreset;
+    bool triggerPresetChange;    // Set true in audio callback when preset switch pressed
+    bool triggerSettingsSave;    // Set true when settings need to be saved
+    bool triggerPresetBlink;     // Set true when we should blink LED to show preset
     Led led1;
     Led led2;
 };
@@ -62,6 +145,9 @@ struct PedalState {
 DaisyPetal hw;
 PedalState state;
 CloudSeed::ReverbController* reverb = nullptr;
+
+// Persistent Storage Declaration. Using type Settings and passed the device's qspi handle
+PersistentStorage<Settings> SavedSettings(hw.seed.qspi);
   
 // This is used in the modified CloudSeed code for allocating 
 // delay line memory to SDRAM (64MB available on Daisy)
@@ -80,46 +166,59 @@ void* custom_pool_allocate(size_t size)
         return ptr;
 }
 
-void cyclePreset()
+void loadPreset(int presetIndex)
 {
-    state.currentPreset++;
-    if (state.currentPreset > MAX_PRESET_INDEX) {
-        state.currentPreset = 0;
+    // Validate preset index
+    if (presetIndex < 0 || presetIndex >= NUM_PRESETS) {
+        presetIndex = 0;  // Default to first preset if invalid
     }
 
     reverb->ClearBuffers();
 
-    switch (state.currentPreset) {
-        case 0:
-            reverb->initFactoryChorus();
-            break;
-        case 1:
-            reverb->initFactoryDullEchos();
-            break;
-        case 2:
-            reverb->initFactoryHyperplane();
-            break;
-        case 3:
-            reverb->initFactoryMediumSpace();
-            break;
-        case 4:
-            reverb->initFactoryNoiseInTheHallway();
-            break;
-        case 5:
-            reverb->initFactoryRubiKaFields();
-            break;
-        case 6:
-            reverb->initFactorySmallRoom();
-            break;
-        case 7:
-            reverb->initFactory90sAreBack();
-            break;
-        // case 8:
-        //     reverb->initFactoryThroughTheLookingGlass(); // Only preset that sounds scratchy (using 4-5 delay lines, mono) causes buffer underruns
-        //                                                   //   TODO Try slight modifications to this preset to allow to work
-        default:
-            break;
+    // Call the preset's initialization function using member function pointer
+    (reverb->*(PRESETS[presetIndex].initFunction))();
+}
+
+void loadSettings()
+{
+    // Reference to local copy of settings stored in flash
+    Settings &localSettings = SavedSettings.GetSettings();
+
+    int savedVersion = localSettings.version;
+
+    if (savedVersion != SETTINGS_VERSION) {
+        // Something has changed. Load defaults!
+        SavedSettings.RestoreDefaults();
+        loadSettings();
+        return;
     }
+
+    // Load and validate the preset
+    state.currentPreset = localSettings.currentPreset;
+
+    // Validate preset range and default to 0 if invalid
+    if (state.currentPreset < 0 || state.currentPreset >= NUM_PRESETS) {
+        state.currentPreset = 0;
+    }
+
+    loadPreset(state.currentPreset);
+}
+
+void saveSettings()
+{
+    // Reference to local copy of settings stored in flash
+    Settings &localSettings = SavedSettings.GetSettings();
+
+    localSettings.version = SETTINGS_VERSION;
+    localSettings.currentPreset = state.currentPreset;
+
+    state.triggerSettingsSave = true;
+}
+
+void cyclePreset()
+{
+    state.currentPreset = (state.currentPreset + 1) % NUM_PRESETS;
+    loadPreset(state.currentPreset);
 }
 
 
@@ -132,53 +231,156 @@ inline bool hasChanged(float prev, float current) {
     return (prev < current - FLOAT_EPSILON) || (prev > current + FLOAT_EPSILON);
 }
 
+// Blink state machine
+struct BlinkState {
+    bool active;
+    int currentBlink;
+    bool ledOn;
+    uint32_t lastTransitionTime;
+    BlinkPattern pattern;
+};
+
+BlinkState led2BlinkState = {false, 0, false, 0, {0, 0, 0, 0}};
+
+// Get the blink pattern for a given preset index
+BlinkPattern getPresetBlinkPattern(int presetIndex) {
+    // Validate preset index
+    if (presetIndex < 0 || presetIndex >= NUM_PRESETS) {
+        presetIndex = 0;  // Default to first preset if invalid
+    }
+    return PRESETS[presetIndex].blinkPattern;
+}
+
+// Start a blink sequence
+void startBlinkSequence(BlinkPattern pattern) {
+    led2BlinkState.active = true;
+    led2BlinkState.currentBlink = 0;
+    led2BlinkState.ledOn = false;
+    led2BlinkState.lastTransitionTime = System::GetNow();
+    led2BlinkState.pattern = pattern;
+    state.led2.Set(0.0f);
+    state.led2.Update();
+}
+
+// Update blink state machine (call this in main loop)
+void updateBlinkState() {
+    // If bypassed, turn off LED2 and deactivate blinking
+    if (state.bypass) {
+        if (led2BlinkState.active) {
+            led2BlinkState.active = false;
+            state.led2.Set(0.0f);
+            state.led2.Update();
+        }
+        return;
+    }
+
+    // If not active and not bypassed, restart the blink sequence
+    if (!led2BlinkState.active) {
+        startBlinkSequence(getPresetBlinkPattern(state.currentPreset));
+        return;
+    }
+
+    uint32_t now = System::GetNow();
+    uint32_t elapsed = now - led2BlinkState.lastTransitionTime;
+
+    if (led2BlinkState.ledOn) {
+        // LED is currently on, check if it's time to turn it off
+        if (elapsed >= led2BlinkState.pattern.onDurationMs) {
+            state.led2.Set(0.0f);
+            state.led2.Update();
+            led2BlinkState.ledOn = false;
+            led2BlinkState.lastTransitionTime = now;
+            led2BlinkState.currentBlink++;
+        }
+    } else {
+        // LED is currently off
+        if (led2BlinkState.currentBlink >= led2BlinkState.pattern.numBlinks) {
+            // All blinks complete, check if pause is done
+            if (elapsed >= led2BlinkState.pattern.pauseAfterMs) {
+                // Restart the sequence instead of stopping
+                led2BlinkState.currentBlink = 0;
+                led2BlinkState.ledOn = false;
+                led2BlinkState.lastTransitionTime = now;
+            }
+        } else {
+            // More blinks to go, check if it's time to turn LED on again
+            if (elapsed >= led2BlinkState.pattern.offDurationMs) {
+                state.led2.Set(1.0f);
+                state.led2.Update();
+                led2BlinkState.ledOn = true;
+                led2BlinkState.lastTransitionTime = now;
+            }
+        }
+    }
+}
+
 // This runs at a fixed rate, to prepare audio samples
 static void AudioCallback(AudioHandle::InputBuffer  in,
                           AudioHandle::OutputBuffer out,
                           size_t                    size)
 {
+
     hw.ProcessAnalogControls();
     hw.ProcessDigitalControls();
     state.led1.Update();
     state.led2.Update();
 
+    //
+    // Process footswitches
+    //
+
+    // (De-)Activate bypass and toggle LED when left footswitch is pressed
+    if (hw.switches[Terrarium::FOOTSWITCH_1].RisingEdge()) {
+        state.bypass = !state.bypass;
+        state.led1.Set(state.bypass ? 0.0f : 1.0f);
+    }
+
+    // Cycle available models (actual preset change happens in main loop)
+    if (hw.switches[Terrarium::FOOTSWITCH_2].RisingEdge()) {
+        state.triggerPresetChange = true;
+    }
+
+    //
+    // Process knobs and toggle switches
+    //
+
     // Process all parameter values
-    const float dryout_value = state.dryOut.Process();
-    const float earlyout_value = state.earlyOut.Process();
-    const float mainout_value = state.mainOut.Process();
-    const float time_value = state.delayTime.Process();
-    const float diffusion_value = state.diffusion.Process();
-    const float tap_decay_value = state.tapDecay.Process();
+    const float dryOutValue = state.dryOut.Process();
+    const float earlyOutValue = state.earlyOut.Process();
+    const float mainOutValue = state.mainOut.Process();
+    const float timeValue = state.delayTime.Process();
+    const float diffusionValue = state.diffusion.Process();
+    const float tapDecayValue = state.tapDecay.Process();
 
     // Update reverb parameters only when changed
-    if (hasChanged(state.prevDryOut, dryout_value)) {
-        reverb->SetParameter(::Parameter::DryOut, dryout_value);
-        state.prevDryOut = dryout_value;
+    if (hasChanged(state.prevDryOut, dryOutValue)) {
+        reverb->SetParameter(::Parameter::DryOut, dryOutValue);
+        state.prevDryOut = dryOutValue;
     }
 
-    if (hasChanged(state.prevEarlyOut, earlyout_value)) {
-        reverb->SetParameter(::Parameter::EarlyOut, earlyout_value);
-        state.prevEarlyOut = earlyout_value;
+    if (hasChanged(state.prevEarlyOut, earlyOutValue)) {
+        reverb->SetParameter(::Parameter::EarlyOut, earlyOutValue);
+        state.prevEarlyOut = earlyOutValue;
     }
 
-    if (hasChanged(state.prevMainOut, mainout_value)) {
-        reverb->SetParameter(::Parameter::MainOut, mainout_value);
-        state.prevMainOut = mainout_value;
+    if (hasChanged(state.prevMainOut, mainOutValue)) {
+        reverb->SetParameter(::Parameter::MainOut, mainOutValue);
+        state.prevMainOut = mainOutValue;
     }
 
-    if (hasChanged(state.prevDelayTime, time_value)) {
-        reverb->SetParameter(::Parameter::LineDecay, time_value);
-        state.prevDelayTime = time_value;
+    if (hasChanged(state.prevDelayTime, timeValue)) {
+        reverb->SetParameter(::Parameter::LineDecay, timeValue);
+        state.prevDelayTime = timeValue;
     }
 
-    if (hasChanged(state.prevDiffusion, diffusion_value)) {
-        reverb->SetParameter(::Parameter::LateDiffusionFeedback, diffusion_value);
-        state.prevDiffusion = diffusion_value;
+    if (hasChanged(state.prevDiffusion, diffusionValue)) {
+        reverb->SetParameter(::Parameter::LateDiffusionFeedback, diffusionValue);
+        state.prevDiffusion = diffusionValue;
     }
 
-    if (hasChanged(state.prevTapDecay, tap_decay_value)) {
-        reverb->SetParameter(::Parameter::TapDecay, tap_decay_value);
-        state.prevTapDecay = tap_decay_value;
+    if (hasChanged(state.prevTapDecay, tapDecayValue)) {
+        reverb->SetParameter(::Parameter::TapDecay, tapDecayValue);
+        state.prevTapDecay = tapDecayValue;
     }
 
     // Delay Line Switches
@@ -197,22 +399,16 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
         state.prevNumDelayLines = numDelayLines;
     }
 
+    //
+    // Process audio
+    //
+
     // Copy input to buffer
     for (size_t i = 0; i < size; i++) {
-        audioInputBuffer[i] = in[0][i];
+        audioInputBuffer[i] = in[0][i]; // left channel
     }
 
-    // (De-)Activate bypass and toggle LED when left footswitch is pressed
-    if (hw.switches[Terrarium::FOOTSWITCH_1].RisingEdge()) {
-        state.bypass = !state.bypass;
-        state.led1.Set(state.bypass ? 0.0f : 1.0f);
-    }
-
-    // Cycle available models
-    if (hw.switches[Terrarium::FOOTSWITCH_2].RisingEdge()) {
-        cyclePreset();
-    }
-
+    // Apply effect or bypass
     if (!state.bypass) {
         reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
         for (size_t i = 0; i < size; i++) {
@@ -220,7 +416,7 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
         }
     } else {
         for (size_t i = 0; i < size; i++) {
-            out[0][i] = in[0][i];
+            out[0][i] = in[0][i]; // left channel only
         }
     }
 }
@@ -228,16 +424,15 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
 int main(void)
 {
     hw.Init();
-    const float samplerate = hw.AudioSampleRate();
+    const float sampleRate = hw.AudioSampleRate();
 
     // Initialize audio processing libraries
     AudioLib::ValueTables::Init();
     CloudSeed::FastSin::Init();
 
     // Initialize reverb controller
-    reverb = new CloudSeed::ReverbController(samplerate);
+    reverb = new CloudSeed::ReverbController(sampleRate);
     reverb->ClearBuffers();
-    reverb->initFactoryChorus();
 
     // Initialize parameters
     state.dryOut.Init(hw.knob[Terrarium::KNOB_1], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
@@ -257,8 +452,10 @@ int main(void)
     state.prevNumDelayLines = 1.0f; // Start with 1 delay line (no switches pressed)
 
     // Initialize state
-    state.currentPreset = 0;
     state.bypass = true;
+    state.triggerPresetChange = false;
+    state.triggerSettingsSave = false;
+    state.triggerPresetBlink = false;
 
     // Initialize LEDs
     state.led1.Init(hw.seed.GetPin(Terrarium::LED_1), false);
@@ -267,11 +464,38 @@ int main(void)
     state.led2.Init(hw.seed.GetPin(Terrarium::LED_2), false);
     state.led2.Update();
 
+    // Initialize persistent storage with default settings
+    Settings defaultSettings = {
+        SETTINGS_VERSION,  // version
+        0                  // currentPreset (default to Chorus preset)
+    };
+    SavedSettings.Init(defaultSettings);
+
+    // Load settings from persistent storage (with resilience to failures)
+    loadSettings();
+
     // Start audio processing
     hw.StartAdc();
     hw.StartAudio(AudioCallback);
 
     while (1) {
+        // Handle preset changes (moved from audio callback for better performance)
+        if (state.triggerPresetChange) {
+            state.triggerPresetChange = false;
+            cyclePreset();
+            saveSettings();
+            startBlinkSequence(getPresetBlinkPattern(state.currentPreset));
+        }
+
+        // Handle settings save (moved from audio callback for better performance)
+        if (state.triggerSettingsSave) {
+            SavedSettings.Save();  // Write locally stored settings to the external flash
+            state.triggerSettingsSave = false;
+        }
+
+        // Update LED blink state machine
+        updateBlinkState();
+
         System::Delay(10);
     }
 }

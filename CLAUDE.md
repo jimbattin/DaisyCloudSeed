@@ -64,8 +64,8 @@ DaisyCloudSeed/
 - FOOTSWITCH_2 (pin 5) - Preset cycling (CloudSeed only)
 
 **LEDs** (2):
-- LED_1 (pin 22) - Active indicator
-- LED_2 (pin 23) - Available
+- LED_1 (pin 22) - Active indicator (on when not bypassed)
+- LED_2 (pin 23) - Preset indicator (blinks N times for preset N, continuous with 5s pause)
 
 **Audio**:
 - Mono input/output (uses left channel only)
@@ -103,18 +103,59 @@ FOOTSWITCH_2: Preset cycle (8 presets)
 
 ### Presets
 
-Eight factory presets defined in [CloudSeed/ReverbController.h](CloudSeed/ReverbController.h) (lines 26-84):
+Eight factory presets are configured in an array-based system in [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp) (lines 55-96):
 
-1. Chorus
-2. Dull Echos
-3. Hyperplane
-4. Medium Space
-5. Noise in the Hallway
-6. Rubi Ka Fields
-7. Small Room
-8. 90s Are Back
+1. Chorus (1 blink)
+2. Dull Echos (2 blinks)
+3. Hyperplane (3 blinks)
+4. Medium Space (4 blinks)
+5. Noise in the Hallway (5 blinks)
+6. Rubi Ka Fields (6 blinks)
+7. Small Room (7 blinks)
+8. 90s Are Back (8 blinks)
 
-Preset cycling logic in cloudseed.cpp:168-177
+**Preset System Architecture**:
+- Presets defined in `PRESETS[]` array with function pointers and LED blink patterns
+- Cycles using modulo operator: `(currentPreset + 1) % NUM_PRESETS`
+- Uses designated initializers for clarity
+- Current preset persists in QSPI flash memory
+- LED2 blinks continuously to indicate active preset (N blinks = preset N)
+
+Preset definitions use initialization functions from [CloudSeed/ReverbController.h](CloudSeed/ReverbController.h) (lines 26-84)
+
+### Preset Persistence
+
+The current preset is automatically saved to and loaded from QSPI flash memory, ensuring it persists across power cycles.
+
+**Implementation** ([petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp)):
+
+**Settings Structure** (lines 100-113):
+```cpp
+struct Settings {
+    int version;         // SETTINGS_VERSION for compatibility checking
+    int currentPreset;   // Currently selected preset (0-7)
+    bool operator!=(const Settings& a) const;  // Required by PersistentStorage
+};
+```
+
+**Storage Management**:
+- Uses Daisy's `PersistentStorage<Settings>` class with QSPI flash
+- Version control ensures compatibility when Settings struct changes
+- Automatic defaults restoration if version mismatch detected
+- Settings validated on load (invalid presets default to 0)
+
+**Save/Load Workflow**:
+1. **On startup**: `load_settings()` restores preset from flash (line 96-119)
+2. **On preset change**: `save_settings()` triggers deferred write (line 121-130)
+3. **In main loop**: Actual flash write happens outside audio callback (line 296-299)
+
+**Resilience Features**:
+- Invalid preset indices automatically default to preset 0 (Chorus)
+- Version mismatch triggers clean restore to defaults
+- Non-blocking: Flash writes happen in main loop, not audio callback
+- Settings survive power cycles, firmware updates, and manual resets
+
+**To add more persistent settings**: Add fields to `Settings` struct, increment `SETTINGS_VERSION`, and update `load_settings()` and `save_settings()` functions.
 
 ### Parameters
 
@@ -299,11 +340,30 @@ lateFeedback.Init(hw.knob[KNOB_4], 0.0f, 1.0f, Parameter::LINEAR);
 
 ### 3. Adding New Presets
 
-**File**: [CloudSeed/ReverbController.h](CloudSeed/ReverbController.h)
+**File**: [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp)
 
-1. Add preset definition in `factoryPresets` array (lines 26-84)
-2. Update preset count in cloudseed.cpp if needed
-3. Follow existing preset format
+The preset system uses an array-based configuration (lines 55-96). To add a new preset:
+
+1. Add a new entry to the `PRESETS[]` array using designated initializers:
+
+```cpp
+{
+    .initFunction = &CloudSeed::ReverbController::initFactoryYourNewPreset,
+    .blinkPattern = {.numBlinks = 9, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+    .name = "Your New Preset"
+}
+```
+
+2. Define the initialization function in [CloudSeed/ReverbController.h](CloudSeed/ReverbController.h)
+
+**No other code changes needed** - `NUM_PRESETS` is computed automatically from the array size, and the modulo cycling logic adapts automatically.
+
+**Blink Pattern Customization**:
+Each preset can have a unique blink pattern. Modify the `.blinkPattern` fields:
+- `.numBlinks`: How many times to blink
+- `.onDurationMs`: LED on duration (milliseconds)
+- `.offDurationMs`: LED off duration between blinks (milliseconds)
+- `.pauseAfterMs`: Pause before repeating the sequence (milliseconds)
 
 ### 4. Changing Number of Delay Lines
 
@@ -358,17 +418,28 @@ float cv_value = hw.knob[KNOB_1].Process();
 // cv_value is 0.0-1.0 regardless of input voltage
 ```
 
-### 8. Using LED_2
+### 8. LED2 Preset Indicator System
 
-```cpp
-// In setup:
-hw.led2.Set(brightness);  // 0.0-1.0
-hw.led2.Update();
+**Current Implementation**: LED2 uses a state machine to blink the preset number continuously (runs in main loop).
 
-// In audio callback or main loop:
-hw.led2.Set(some_modulation_value);
-hw.led2.Update();
-```
+The system is defined in [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp) (lines 148-229):
+
+**Key Components**:
+- `BlinkPattern` struct: Defines blink timing parameters
+- `BlinkState` struct: Maintains blink state machine
+- `updateBlinkState()`: Main loop function that manages LED transitions
+- `getPresetBlinkPattern()`: Retrieves pattern for current preset
+- `startBlinkSequence()`: Initiates a new blink sequence
+
+**Behavior**:
+- Blinks continuously when pedal is active (not bypassed)
+- Turns off completely when bypassed
+- Blinks N times where N = preset number (1-8)
+- 150ms on, 150ms off per blink
+- 5 second pause between sequences
+- Automatically restarts sequence after pause
+
+**To modify LED2 behavior for custom purposes**, you would need to modify or replace the `updateBlinkState()` function in the main loop. The current implementation is tightly integrated with preset indication.
 
 ## Code Navigation Tips
 
@@ -390,12 +461,37 @@ hw.led2.Update();
 
 ### Understanding Audio Flow
 
-**CloudSeed**:
-1. Input → `AudioCallback()` in cloudseed.cpp
-2. Read controls → Update reverb parameters
-3. Process: `reverb.Process(input, bufferSize)`
-4. Mix dry/early/late signals
-5. Output
+**CloudSeed Audio Callback** (`AudioCallback()` - runs at audio rate, ~48kHz):
+1. Process analog/digital controls (knobs, switches, footswitches)
+2. Update LED states
+3. Read and smooth all parameter values
+4. Update reverb parameters (only when values change)
+5. Handle delay line count switching
+6. Check for preset change request → set trigger flag
+7. Check for bypass toggle
+8. Process audio: `reverb.Process(input, bufferSize)`
+9. Mix and output dry/wet signals
+
+**CloudSeed Main Loop** (`main()` while loop - runs at ~100Hz):
+1. **Handle preset changes**: When triggered by footswitch
+   - Call `cyclePreset()` to load new preset
+   - Call `save_settings()` to queue flash write
+   - Start LED2 blink sequence for new preset
+2. **Handle flash writes**: Write settings to QSPI when queued
+3. **Update LED2 blink state**: Manage LED transitions for preset indication
+4. Delay 10ms
+
+**Performance Architecture**:
+- **Audio callback**: Time-critical, optimized for low latency
+  - Only parameter smoothing and audio processing
+  - Sets trigger flags for heavy operations
+  - No flash writes or preset loading
+- **Main loop**: Non-critical background tasks
+  - Preset switching (includes buffer clearing)
+  - Flash memory writes
+  - LED blink state machine
+
+This separation prevents audio glitches during preset changes and flash writes.
 
 **CloudyReverb**:
 1. Input → `AudioCallback()` in cloudyreverb.cpp
@@ -511,7 +607,12 @@ Key changes in this fork:
 3. Added preset cycling via footswitch
 4. Simplified control scheme for guitar pedal use
 5. Added delay line switching via toggle switches
-6. Recent addition: Low-pass filter control on KNOB_6
+6. Low-pass filter control on KNOB_6
+7. **Persistent preset storage** in QSPI flash memory with version control
+8. **LED2 blink pattern system** for visual preset indication
+9. **Array-based preset configuration** with function pointers and designated initializers
+10. **Performance optimization**: Moved preset switching and flash writes from audio callback to main loop
+11. **Modulo-based preset cycling** for cleaner wraparound logic
 
 ### Version Information
 
@@ -534,7 +635,8 @@ make program-dfu           # Flash to Daisy
 
 ### File Locations
 - Control mapping: `petal/CloudSeed/cloudseed.cpp`
-- Presets: `CloudSeed/ReverbController.h`
+- Preset array configuration: `petal/CloudSeed/cloudseed.cpp` (lines 55-96)
+- Preset initialization functions: `CloudSeed/ReverbController.h`
 - Parameters: `CloudSeed/Parameter.h`
 - Hardware config: `Terrarium/terrarium.h`
 
@@ -543,11 +645,14 @@ make program-dfu           # Flash to Daisy
 - Sample rate: 48kHz (typical)
 - SDRAM pool: 48MB
 - Delay lines: 5 (mono Terrarium)
-- Presets: 8 factory presets
+- Presets: 8 factory presets (array-based, auto-counted)
+- Persistent storage: QSPI flash with version control
+- LED2: Continuous blink pattern indicates preset number
 
 ### Quick Modifications
-1. Control mapping → cloudseed.cpp:142-162
+1. Control mapping → cloudseed.cpp:242-247
 2. Parameter ranges → Init() calls in cloudseed.cpp
-3. Presets → ReverbController.h:26-84
-4. Switch logic → cloudseed.cpp:179-204
-5. LED behavior → cloudseed.cpp (LED_1/LED_2)
+3. Add/modify presets → cloudseed.cpp:55-96 (PRESETS array)
+4. Blink patterns → cloudseed.cpp:55-96 (blinkPattern fields)
+5. Switch logic → cloudseed.cpp (delay line control)
+6. LED2 blink behavior → cloudseed.cpp:180-229 (updateBlinkState)
