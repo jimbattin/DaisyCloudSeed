@@ -19,7 +19,7 @@ using namespace terrarium;  // This is important for mapping the correct control
 
 // Declare a local daisy_petal for hardware access
 DaisyPetal hw;
-::daisy::Parameter dryOut, earlyOut, mainOut, time, diffusion, tapDecay;
+::daisy::Parameter dryOut, earlyOut, mainOut, delayTime, diffusion, tapDecay;
 bool      bypass;
 int       c;
 Led led1, led2;
@@ -92,7 +92,7 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     float dryout_value = dryOut.Process();
     float earlyout_value = earlyOut.Process();
     float mainout_value = mainOut.Process();
-    float time_value = time.Process();
+    float time_value = delayTime.Process();
     float diffusion_value = diffusion.Process();
     float tap_decay_value = tapDecay.Process();
 
@@ -203,7 +203,7 @@ int main(void)
     mainOut.Init(hw.knob[Terrarium::KNOB_3], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
     diffusion.Init(hw.knob[Terrarium::KNOB_4], 0.0f, 1.0f, ::daisy::Parameter::LINEAR); 
     tapDecay.Init(hw.knob[Terrarium::KNOB_5], 0.0f, 1.0f, ::daisy::Parameter::LINEAR); 
-    time.Init(hw.knob[Terrarium::KNOB_6], 0.0f, 1.0f, ::daisy::Parameter::LINEAR); 
+    delayTime.Init(hw.knob[Terrarium::KNOB_6], 0.0f, 1.0f, ::daisy::Parameter::LINEAR); 
 
     pdryout_value = 0.0;
     pearlyout_value = 0.0;
