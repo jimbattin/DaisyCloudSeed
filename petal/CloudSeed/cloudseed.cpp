@@ -43,6 +43,15 @@ struct BlinkPattern {
     uint32_t pauseAfterMs;   // Pause after all blinks complete
 };
 
+// Blink state machine
+struct BlinkState {
+    bool active;
+    int currentBlink;
+    bool ledOn;
+    uint32_t lastTransitionTime;
+    BlinkPattern pattern;
+};
+
 // Preset configuration structure
 struct PresetConfig {
     void (CloudSeed::ReverbController::*initFunction)();  // Function pointer to init method
@@ -148,26 +157,33 @@ CloudSeed::ReverbController* reverb = nullptr;
 
 // Persistent Storage Declaration. Using type Settings and passed the device's qspi handle
 PersistentStorage<Settings> SavedSettings(hw.seed.qspi);
-  
+
+BlinkState led2BlinkState = {false, 0, false, 0, {0, 0, 0, 0}};
+
+/*
+ * Memory pool for delay lines
+ */
+
 // This is used in the modified CloudSeed code for allocating 
 // delay line memory to SDRAM (64MB available on Daisy)
 #define CUSTOM_POOL_SIZE (48*1024*1024)
 DSY_SDRAM_BSS char custom_pool[CUSTOM_POOL_SIZE];
 size_t pool_index = 0;
 int allocation_count = 0;
-void* custom_pool_allocate(size_t size)
-{
-        if (pool_index + size >= CUSTOM_POOL_SIZE)
-        {
-                return 0;
-        }
-        void* ptr = &custom_pool[pool_index];
-        pool_index += size;
-        return ptr;
+void* custom_pool_allocate(size_t size) {
+    if (pool_index + size >= CUSTOM_POOL_SIZE) {
+        return 0;
+    }
+    void* ptr = &custom_pool[pool_index];
+    pool_index += size;
+    return ptr;
 }
 
-void loadPreset(int presetIndex)
-{
+/*
+ * Presets
+ */
+
+void loadPreset(int presetIndex) {
     // Validate preset index
     if (presetIndex < 0 || presetIndex >= NUM_PRESETS) {
         presetIndex = 0;  // Default to first preset if invalid
@@ -179,8 +195,11 @@ void loadPreset(int presetIndex)
     (reverb->*(PRESETS[presetIndex].initFunction))();
 }
 
-void loadSettings()
-{
+/*
+ * Persistent settings
+ */
+
+void loadSettings() {
     // Reference to local copy of settings stored in flash
     Settings &localSettings = SavedSettings.GetSettings();
 
@@ -204,8 +223,7 @@ void loadSettings()
     loadPreset(state.currentPreset);
 }
 
-void saveSettings()
-{
+void saveSettings() {
     // Reference to local copy of settings stored in flash
     Settings &localSettings = SavedSettings.GetSettings();
 
@@ -215,32 +233,20 @@ void saveSettings()
     state.triggerSettingsSave = true;
 }
 
-void cyclePreset()
-{
+void cyclePreset() {
     state.currentPreset = (state.currentPreset + 1) % NUM_PRESETS;
     loadPreset(state.currentPreset);
 }
 
-
-// Audio buffers (moved outside callback to avoid repeated allocation)
-static float audioInputBuffer[AUDIO_BUFFER_SIZE];
-static float audioOutputBuffer[AUDIO_BUFFER_SIZE];
 
 // Helper function to check if float values differ significantly
 inline bool hasChanged(float prev, float current) {
     return (prev < current - FLOAT_EPSILON) || (prev > current + FLOAT_EPSILON);
 }
 
-// Blink state machine
-struct BlinkState {
-    bool active;
-    int currentBlink;
-    bool ledOn;
-    uint32_t lastTransitionTime;
-    BlinkPattern pattern;
-};
-
-BlinkState led2BlinkState = {false, 0, false, 0, {0, 0, 0, 0}};
+/*
+ * LED blink
+ */
 
 // Get the blink pattern for a given preset index
 BlinkPattern getPresetBlinkPattern(int presetIndex) {
@@ -314,11 +320,18 @@ void updateBlinkState() {
     }
 }
 
+/*
+ * Main audio callback
+ */
+
 // This runs at a fixed rate, to prepare audio samples
-static void AudioCallback(AudioHandle::InputBuffer  in,
+static void audioCallback(AudioHandle::InputBuffer  in,
                           AudioHandle::OutputBuffer out,
-                          size_t                    size)
-{
+                          size_t                    size) {
+
+    // Audio buffers
+    static float audioInputBuffer[AUDIO_BUFFER_SIZE];
+    static float audioOutputBuffer[AUDIO_BUFFER_SIZE];
 
     hw.ProcessAnalogControls();
     hw.ProcessDigitalControls();
@@ -421,8 +434,11 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     }
 }
 
-int main(void)
-{
+/*
+ * Main loop
+ */
+
+int main(void) {
     hw.Init();
     const float sampleRate = hw.AudioSampleRate();
 
@@ -476,9 +492,9 @@ int main(void)
 
     // Start audio processing
     hw.StartAdc();
-    hw.StartAudio(AudioCallback);
+    hw.StartAudio(audioCallback);
 
-    while (1) {
+    while (true) {
         // Handle preset changes (moved from audio callback for better performance)
         if (state.triggerPresetChange) {
             state.triggerPresetChange = false;
