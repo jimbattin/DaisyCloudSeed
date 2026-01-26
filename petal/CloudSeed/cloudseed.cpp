@@ -146,6 +146,7 @@ struct PedalState {
     bool triggerPresetChange;    // Set true in audio callback when preset switch pressed
     bool triggerSettingsSave;    // Set true when settings need to be saved
     bool triggerPresetBlink;     // Set true when we should blink LED to show preset
+    bool presetChangeInProgress; // Set true while preset is being changed (prevents audio processing)
     Led led1;
     Led led2;
 };
@@ -164,7 +165,7 @@ BlinkState led2BlinkState = {false, 0, false, 0, {0, 0, 0, 0}};
  * Memory pool for delay lines
  */
 
-// This is used in the modified CloudSeed code for allocating 
+// This is used in the modified CloudSeed code for allocating
 // delay line memory to SDRAM (64MB available on Daisy)
 #define CUSTOM_POOL_SIZE (48*1024*1024)
 DSY_SDRAM_BSS char custom_pool[CUSTOM_POOL_SIZE];
@@ -172,11 +173,24 @@ size_t pool_index = 0;
 int allocation_count = 0;
 void* custom_pool_allocate(size_t size) {
     if (pool_index + size >= CUSTOM_POOL_SIZE) {
+        // Memory pool exhausted - this should never happen during normal operation
+        // If this occurs, it indicates a serious memory allocation issue
+        // Returning NULL will likely cause a crash, but it's better than silent corruption
         return 0;
     }
     void* ptr = &custom_pool[pool_index];
     pool_index += size;
+    allocation_count++;
     return ptr;
+}
+
+// Helper to get memory pool usage statistics
+size_t get_pool_usage() {
+    return pool_index;
+}
+
+size_t get_pool_remaining() {
+    return CUSTOM_POOL_SIZE - pool_index;
 }
 
 /*
@@ -422,7 +436,8 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     }
 
     // Apply effect or bypass
-    if (!state.bypass) {
+    // IMPORTANT: Skip reverb processing if preset change is in progress to avoid race condition
+    if (!state.bypass && !state.presetChangeInProgress) {
         reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
         for (size_t i = 0; i < size; i++) {
             out[0][i] = audioOutputBuffer[i] * OUTPUT_VOLUME_BOOST;
@@ -472,6 +487,7 @@ int main(void) {
     state.triggerPresetChange = false;
     state.triggerSettingsSave = false;
     state.triggerPresetBlink = false;
+    state.presetChangeInProgress = false;
 
     // Initialize LEDs
     state.led1.Init(hw.seed.GetPin(Terrarium::LED_1), false);
@@ -498,9 +514,21 @@ int main(void) {
         // Handle preset changes (moved from audio callback for better performance)
         if (state.triggerPresetChange) {
             state.triggerPresetChange = false;
+
+            // Set flag to prevent audio processing during preset change
+            // This prevents race condition where audio callback tries to process
+            // while buffers are being cleared/modified
+            state.presetChangeInProgress = true;
+
             cyclePreset();
             saveSettings();
             startBlinkSequence(getPresetBlinkPattern(state.currentPreset));
+
+            // Small delay to ensure all buffers are fully initialized
+            // before audio processing resumes
+            System::Delay(5);
+
+            state.presetChangeInProgress = false; // Re-enable audio processing
         }
 
         // Handle settings save (moved from audio callback for better performance)
