@@ -6,6 +6,7 @@
 #include "daisy_petal.h"
 #include "daisysp.h"
 #include "terrarium.h"
+#include <cmath>
 
 #include "../../CloudSeed/Default.h"
 #include "../../CloudSeed/ReverbController.h"
@@ -20,8 +21,13 @@ using namespace terrarium;  // This is important for mapping the correct control
 // Constants
 constexpr size_t AUDIO_BUFFER_SIZE = 48;
 constexpr float OUTPUT_VOLUME_BOOST = 1.2f;
+constexpr float MAKEUP_GAIN_STRENGTH = 0.8f;  // Max additional gain when fully wet (0.0-1.0)
 constexpr int NUM_SWITCHES = 4;
 constexpr float FLOAT_EPSILON = 1e-6f;
+
+#ifndef M_PI_2
+#define M_PI_2 1.57079632679489661923  // π/2 for equal-power curves
+#endif
 
 // Increment this when changing the settings struct so the software will know
 // to reset to defaults if this ever changes.
@@ -439,8 +445,20 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // IMPORTANT: Skip reverb processing if preset change is in progress to avoid race condition
     if (!state.bypass && !state.presetChangeInProgress) {
         reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
+
+        // Calculate dynamic makeup gain using equal-power crossfade compensation
+        // This maintains perceived loudness as dry/wet balance changes
+        float totalSignal = dryOutValue + earlyOutValue + mainOutValue + FLOAT_EPSILON;
+        float wetBalance = (earlyOutValue + mainOutValue) / totalSignal;
+
+        // Equal-power compensation curve
+        // wetBalance=0 (all dry): sin(0)=0 → no extra gain
+        // wetBalance=1 (all wet): sin(π/2)=1 → maximum extra gain
+        float compensation = sinf(wetBalance * M_PI_2);
+        float makeupGain = OUTPUT_VOLUME_BOOST * (1.0f + compensation * MAKEUP_GAIN_STRENGTH);
+
         for (size_t i = 0; i < size; i++) {
-            out[0][i] = audioOutputBuffer[i] * OUTPUT_VOLUME_BOOST;
+            out[0][i] = audioOutputBuffer[i] * makeupGain;
         }
     } else {
         for (size_t i = 0; i < size; i++) {
