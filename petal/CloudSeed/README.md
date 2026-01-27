@@ -19,3 +19,13 @@ CloudSeed Mono Reverb algorithm.
 | Audio In 1 | Audio input | Mono only for Terrarium |
 | Audio Out 1 | Mix Out | Mono only for Terrarium |
 
+# Presets
+
+1. Chorus (1 blink)
+2. Dull Echos (2 blinks)
+3. Hyperplane (3 blinks)
+4. Medium Space (4 blinks)
+5. Noise in the Hallway (5 blinks)
+6. Rubi Ka Fields (6 blinks)
+7. Small Room (7 blinks)
+8. 90s Are Back (8 blinks)
