@@ -1,12 +1,11 @@
 [submodule "DaisySP"]
 	path = DaisySP
 	url = https://github.com/electro-smith/DaisySP
+	branch = V1.0.0
 [submodule "libdaisy"]
 	path = libdaisy
 	url = https://github.com/electro-smith/libdaisy
-[submodule "eurorack"]
-	path = eurorack
-	url = https://github.com/pichenettes/eurorack
+	branch = v6.0.0
 [submodule "Terrarium"]
 	path = Terrarium
 	url = https://github.com/PedalPCB/Terrarium
