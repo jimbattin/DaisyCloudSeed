@@ -1,6 +1,10 @@
 # Project Name
 TARGET = cloudseed
 
+# We need more space for presets so we are using the daisy bootloader
+# to load our app into SRAM from QSPI Flash
+export APP_TYPE = BOOT_SRAM
+
 # Sources
 CPP_SOURCES = cloudseed.cpp
 # Library Locations
