@@ -98,12 +98,12 @@ KNOB_6: Late Reverberation Decay (0.0-1.0)
 
 SWITCH_1-4: Delay line enable (additive, 1-5 total lines)
 FOOTSWITCH_1: Bypass toggle
-FOOTSWITCH_2: Preset cycle (8 presets)
+FOOTSWITCH_2: Preset cycle (9 presets)
 ```
 
 ### Presets
 
-Eight factory presets are configured in an array-based system in [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp) (lines 55-96):
+Ten factory presets are configured in an array-based system in [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp) (lines 72-133):
 
 1. Chorus (1 blink)
 2. Dull Echos (2 blinks)
@@ -113,6 +113,8 @@ Eight factory presets are configured in an array-based system in [petal/CloudSee
 6. Rubi Ka Fields (6 blinks)
 7. Small Room (7 blinks)
 8. 90s Are Back (8 blinks)
+9. Through the Looking Glass (9 Blinks)
+10. Dark Plate (10 Blinks)
 
 **Preset System Architecture**:
 - Presets defined in `PRESETS[]` array with function pointers and LED blink patterns
@@ -613,6 +615,7 @@ Key changes in this fork:
 9. **Array-based preset configuration** with function pointers and designated initializers
 10. **Performance optimization**: Moved preset switching and flash writes from audio callback to main loop
 11. **Modulo-based preset cycling** for cleaner wraparound logic
+12. **Through the Looking Glass Preset** enabled by adopting a `max_delay_lines` value for each preset
 
 ### Version Information
 
