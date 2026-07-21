@@ -11,13 +11,6 @@ namespace AudioLib
 	public:
 		static const int TableSize = 40001;
 
-		static DSY_SDRAM_BSS float Sqrt[TableSize];
-		static DSY_SDRAM_BSS float Sqrt3[TableSize];
-		static DSY_SDRAM_BSS float Pow1_5[TableSize];
-		static DSY_SDRAM_BSS float Pow2[TableSize];
-		static DSY_SDRAM_BSS float Pow3[TableSize];
-		static DSY_SDRAM_BSS float Pow4[TableSize];
-		static DSY_SDRAM_BSS float x2Pow3[TableSize];
 
 		// octave response. value float every step (2,3,4,5 or 6 steps)
 		static DSY_SDRAM_BSS float Response2Oct[TableSize];
