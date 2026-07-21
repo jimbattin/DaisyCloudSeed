@@ -46,6 +46,7 @@ namespace CloudSeed
 			//initFactorySmallRoom();
 			//initFactory90sAreBack();
 			//initFactoryThroughTheLookingGlass();
+			//initFactoryDarkPlate();
 			
 		}
 
@@ -561,6 +562,63 @@ namespace CloudSeed
 			parameters[(int)Parameter::LowPassEnabled] = 1.0;
 			parameters[(int)Parameter::LowShelfEnabled] = 0.0;
 			parameters[(int)Parameter::HighShelfEnabled] = 0.0;
+			parameters[(int)Parameter::CutoffEnabled] = 1.0;
+			parameters[(int)Parameter::LateStageTap] = 1.0;
+			parameters[(int)Parameter::Interpolation] = 1.0;
+			for (auto value = 0; value < (int)Parameter::Count; value++)
+			{
+				SetParameter((Parameter)value, parameters[value]);
+			}
+
+		}
+		
+		void initFactoryDarkPlate()
+		{
+			//parameters from
+			//https://github.com/ValdemarOrn/CloudSeed/tree/master/Factory%20Programs
+			parameters[(int)Parameter::InputMix] = 0.0;
+			parameters[(int)Parameter::PreDelay] = 0.0;
+			parameters[(int)Parameter::HighPass] = 0.0;
+			parameters[(int)Parameter::LowPass] = 0.2933000028133392;
+			parameters[(int)Parameter::TapCount] = 0.1959999948740005;
+			parameters[(int)Parameter::TapLength] = 0.9866999983787537;
+			parameters[(int)Parameter::TapGain] = 1.0;
+			parameters[(int)Parameter::TapDecay] = 1.0;
+			parameters[(int)Parameter::DiffusionEnabled] = 0.0;
+			parameters[(int)Parameter::DiffusionStages] = 1.0;
+			parameters[(int)Parameter::DiffusionDelay] = 0.3066999912261963;
+			parameters[(int)Parameter::DiffusionFeedback] = 0.7706999778747559;
+			//parameters[(int)Parameter::LineCount] = 1.0;
+			parameters[(int)Parameter::LineDelay] = 0.9100002646446228;
+			parameters[(int)Parameter::LineDecay] = 0.6345999836921692;
+			parameters[(int)Parameter::LateDiffusionEnabled] = 1.0;
+			parameters[(int)Parameter::LateDiffusionStages] = 1.0;
+			parameters[(int)Parameter::LateDiffusionDelay] = 0.239999994635582;
+			parameters[(int)Parameter::LateDiffusionFeedback] = 0.8506999611854553;
+			parameters[(int)Parameter::PostLowShelfGain] = 0.5559999942779541;
+			parameters[(int)Parameter::PostLowShelfFrequency] = 0.3879999816417694;
+			parameters[(int)Parameter::PostHighShelfGain] = 0.7680000066757202;
+			parameters[(int)Parameter::PostHighShelfFrequency] = 0.5133999586105347;
+			parameters[(int)Parameter::PostCutoffFrequency] = 0.9759999513626099;
+			parameters[(int)Parameter::EarlyDiffusionModAmount] = 0.143899992108345;
+			parameters[(int)Parameter::EarlyDiffusionModRate] = 0.2466999888420105;
+			parameters[(int)Parameter::LineModAmount] = 0.2719999849796295;
+			parameters[(int)Parameter::LineModRate] = 0.2292999923229218;
+			parameters[(int)Parameter::LateDiffusionModAmount] = 0.1467999964952469;
+			parameters[(int)Parameter::LateDiffusionModRate] = 0.1666999906301498;
+			parameters[(int)Parameter::TapSeed] = 0.3339999914169312;
+			parameters[(int)Parameter::DiffusionSeed] = 0.1850000023841858;
+			parameters[(int)Parameter::DelaySeed] = 0.2180999964475632;
+			parameters[(int)Parameter::PostDiffusionSeed] = 0.3652999997138977;
+			parameters[(int)Parameter::CrossSeed] = 1.0;
+			parameters[(int)Parameter::DryOut] = 0.0;
+			parameters[(int)Parameter::PredelayOut] = 0.0;
+			parameters[(int)Parameter::EarlyOut] = 0.0;
+			parameters[(int)Parameter::MainOut] = 0.95499974489212036;
+			parameters[(int)Parameter::HiPassEnabled] = 0.0;
+			parameters[(int)Parameter::LowPassEnabled] = 0.0;
+			parameters[(int)Parameter::LowShelfEnabled] = 0.0;
+			parameters[(int)Parameter::HighShelfEnabled] = 1.0;
 			parameters[(int)Parameter::CutoffEnabled] = 1.0;
 			parameters[(int)Parameter::LateStageTap] = 1.0;
 			parameters[(int)Parameter::Interpolation] = 1.0;

@@ -7,6 +7,7 @@
 #include "daisysp.h"
 #include "terrarium.h"
 #include <cmath>
+#include <array>
 
 #include "../../CloudSeed/Default.h"
 #include "../../CloudSeed/ReverbController.h"
@@ -63,6 +64,7 @@ struct PresetConfig {
     void (CloudSeed::ReverbController::*initFunction)();  // Function pointer to init method
     BlinkPattern blinkPattern;
     const char* name;  // Preset name for reference
+    const float max_delay_lines; // Limit the number of lines to prevent skipping/dropped audio
 };
 
 // Array of all available presets
@@ -71,42 +73,63 @@ const PresetConfig PRESETS[] = {
     {
         .initFunction = &CloudSeed::ReverbController::initFactoryChorus,
         .blinkPattern = {.numBlinks = 1, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Chorus"
+        .name = "Chorus",
+        .max_delay_lines = 5.0f
     },
     {
         .initFunction = &CloudSeed::ReverbController::initFactoryDullEchos,
         .blinkPattern = {.numBlinks = 2, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Dull Echos"
+        .name = "Dull Echos",
+        .max_delay_lines = 5.0f
     },
     {
         .initFunction = &CloudSeed::ReverbController::initFactoryHyperplane,
         .blinkPattern = {.numBlinks = 3, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Hyperplane"
+        .name = "Hyperplane",
+        .max_delay_lines = 5.0f
     },
     {
         .initFunction = &CloudSeed::ReverbController::initFactoryMediumSpace,
         .blinkPattern = {.numBlinks = 4, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Medium Space"
+        .name = "Medium Space",
+        .max_delay_lines = 5.0f
     },
     {
         .initFunction = &CloudSeed::ReverbController::initFactoryNoiseInTheHallway,
         .blinkPattern = {.numBlinks = 5, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Noise in the Hallway"
+        .name = "Noise in the Hallway",
+        .max_delay_lines = 5.0f
     },
     {
         .initFunction = &CloudSeed::ReverbController::initFactoryRubiKaFields,
         .blinkPattern = {.numBlinks = 6, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Rubi Ka Fields"
+        .name = "Rubi Ka Fields",
+        .max_delay_lines = 5.0f
     },
     {
         .initFunction = &CloudSeed::ReverbController::initFactorySmallRoom,
         .blinkPattern = {.numBlinks = 7, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Small Room"
+        .name = "Small Room",
+        .max_delay_lines = 5.0f
     },
     {
         .initFunction = &CloudSeed::ReverbController::initFactory90sAreBack,
         .blinkPattern = {.numBlinks = 8, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "90s Are Back"
+        .name = "90s Are Back",
+        .max_delay_lines = 5.0f
+    },
+    {
+        // This preset is CPU intensive and starts crackling with more than 2-3 delay lines active
+        .initFunction = &CloudSeed::ReverbController::initFactoryThroughTheLookingGlass,
+        .blinkPattern = {.numBlinks = 9, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+        .name = "Through the Looking Glass",
+        .max_delay_lines = 3.0f
+    },
+    {
+        .initFunction = &CloudSeed::ReverbController::initFactoryDarkPlate,
+        .blinkPattern = {.numBlinks = 10, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
+        .name = "Dark Plate",
+        .max_delay_lines = 5.0f
     }
 };
 
@@ -115,7 +138,7 @@ constexpr int NUM_PRESETS = sizeof(PRESETS) / sizeof(PRESETS[0]);
 // Persistent Settings
 struct Settings {
     int version;        // Version of the settings struct
-    int currentPreset;  // Currently selected preset (0-7)
+    int currentPreset;  // Currently selected preset (0-8)
 
     // Overloading the != operator
     // This is necessary as this operator is used in the PersistentStorage source code
@@ -425,6 +448,11 @@ static void audioCallback(AudioHandle::InputBuffer  in,
             numDelayLines += 1.0f;
         }
     }
+    // Do not exceed the preset's limit for delay lines
+    // Only needed for "Through the Looking Glass" at the moment
+    if (numDelayLines > PRESETS[state.currentPreset].max_delay_lines) {
+        numDelayLines = PRESETS[state.currentPreset].max_delay_lines;
+    }
 
     if (hasChanged(state.prevNumDelayLines, numDelayLines)) {
         // TODO: Determine if ClearBuffers() is needed when changing delay line count
@@ -544,7 +572,7 @@ int main(void) {
 
             // Small delay to ensure all buffers are fully initialized
             // before audio processing resumes
-            System::Delay(5);
+            System::Delay(10);
 
             state.presetChangeInProgress = false; // Re-enable audio processing
         }
