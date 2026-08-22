@@ -186,7 +186,6 @@ namespace CloudSeed
 				newTapPosition[i] = newTapPosition[i - 1] + (int)(tapData[i] * scaleLength);
 			}
 
-			float sumGains = 0.0;
 			float lastTapPos = newTapPosition[count - 1];
 			int gainIndex = 0;
 
