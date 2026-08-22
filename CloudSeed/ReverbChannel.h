@@ -178,6 +178,9 @@ namespace CloudSeed
 			case Parameter::TapDecay:
 				multitap.SetTapDecay(value);
 				break;
+			case Parameter::isReverse:
+				multitap.SetReverseDecay((bool)value);
+				break;
 
 			case Parameter::DiffusionEnabled:
 			{
