@@ -23,7 +23,7 @@ using namespace terrarium;  // This is important for mapping the correct control
 constexpr size_t AUDIO_BUFFER_SIZE = 48;
 constexpr float OUTPUT_VOLUME_BOOST = 1.2f;
 constexpr float MAKEUP_GAIN_STRENGTH = 0.8f;  // Max additional gain when fully wet (0.0-1.0)
-constexpr int NUM_SWITCHES = 4;
+constexpr int NUM_SWITCHES = 3;
 constexpr float FLOAT_EPSILON = 1e-6f;
 
 #ifndef M_PI_2
@@ -38,9 +38,11 @@ constexpr float FLOAT_EPSILON = 1e-6f;
 static const int DELAY_LINE_SWITCHES[NUM_SWITCHES] = {
     Terrarium::SWITCH_1,
     Terrarium::SWITCH_2,
-    Terrarium::SWITCH_3,
-    Terrarium::SWITCH_4
+    Terrarium::SWITCH_3
 };
+
+// Switch to control Bloom (reverse tap decay)
+static const int BLOOM_SWITCH = Terrarium::SWITCH_4;
 
 // LED blink pattern configuration (defined early for use in preset config)
 struct BlinkPattern {
@@ -168,6 +170,7 @@ struct PedalState {
     float prevDiffusion;
     float prevTapDecay;
     float prevNumDelayLines;
+    bool prevReverseTaps;
 
     // State
     bool bypass;
@@ -176,6 +179,7 @@ struct PedalState {
     bool triggerSettingsSave;    // Set true when settings need to be saved
     bool triggerPresetBlink;     // Set true when we should blink LED to show preset
     bool presetChangeInProgress; // Set true while preset is being changed (prevents audio processing)
+    bool reverseTaps;
     Led led1;
     Led led2;
 };
@@ -407,6 +411,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     const float timeValue = state.delayTime.Process();
     const float diffusionValue = state.diffusion.Process();
     const float tapDecayValue = state.tapDecay.Process();
+    const bool reverseTaps = hw.switches[BLOOM_SWITCH].Pressed();
 
     // Update reverb parameters only when changed
     if (hasChanged(state.prevDryOut, dryOutValue)) {
@@ -441,8 +446,8 @@ static void audioCallback(AudioHandle::InputBuffer  in,
 
     // Delay Line Switches
     // The .Pressed() function below counts an 'ON' switch as pressed.
-    // Total number of switches on sets how many delay lines are activated (1 - 5)
-    float numDelayLines = 1.0f;
+    // Total number of switches on sets how many delay lines are activated (2 - 5)
+    float numDelayLines = 2.0f;
     for (int i = 0; i < NUM_SWITCHES; i++) {
         if (hw.switches[DELAY_LINE_SWITCHES[i]].Pressed()) {
             numDelayLines += 1.0f;
@@ -459,6 +464,14 @@ static void audioCallback(AudioHandle::InputBuffer  in,
         reverb->SetParameter(::Parameter::LineCount, numDelayLines);
         state.prevNumDelayLines = numDelayLines;
     }
+
+    // Process Bloom/Reverse tap switch
+    if (state.prevReverseTaps != reverseTaps) {
+        reverb->SetParameter(::Parameter::isReverse, reverseTaps ? 1.0f : 0.0f);
+        state.prevReverseTaps = reverseTaps;
+    }
+
+
 
     //
     // Process audio
@@ -526,7 +539,8 @@ int main(void) {
     state.prevDelayTime = 0.0f;
     state.prevDiffusion = 0.0f;
     state.prevTapDecay = 0.0f;
-    state.prevNumDelayLines = 1.0f; // Start with 1 delay line (no switches pressed)
+    state.prevNumDelayLines = 2.0f; // Start with 2 delay lines (no switches pressed)
+    state.prevReverseTaps = false;
 
     // Initialize state
     state.bypass = true;
