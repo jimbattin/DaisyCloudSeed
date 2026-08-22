@@ -188,29 +188,26 @@ namespace CloudSeed
 
 			float sumGains = 0.0;
 			float lastTapPos = newTapPosition[count - 1];
+			int gainIndex = 0;
 
-			if (isReverse && (bool)gain) // Computes tap gain gain in reverse order for "bloom" effect when tap gain is non-zero
+			for (int i = 0; i < count; i++)
 			{
-				for (int i = count - 1; i > -1; i--)
-				{
-					// when decay set to 0, there is no decay, when set to 1, the gain at the last sample is 0.01 = -40dB
-					auto g = std::pow(10, -decay * 2 * newTapPosition[i] / (float)(lastTapPos + 1));
-					auto tap = (2 * rand() - 1) * tapCountFactor;
-					newTapGains[i] = tap * g * gain;
-				}
+				// when decay set to 0, there is no decay, when set to 1, the gain at the last sample is 0.01 = -40dB
+				auto g = std::pow(10, -decay * 2 * newTapPosition[i] / (float)(lastTapPos + 1));
+				auto tap = (2 * rand() - 1) * tapCountFactor;
+
+				if (isReverse) 
+					gainIndex = count - (i + 1);
+				else
+					gainIndex = i;
+				newTapGains[gainIndex] = tap * g * gain;
 			}
-			else // Normal order, giving us diminishing tap gain decay
-			{
-				for (int i = 0; i < count; i++)
-				{
-					// when decay set to 0, there is no decay, when set to 1, the gain at the last sample is 0.01 = -40dB
-					auto g = std::pow(10, -decay * 2 * newTapPosition[i] / (float)(lastTapPos + 1));
-					auto tap = (2 * rand() - 1) * tapCountFactor;
-					newTapGains[i] = tap * g * gain;
-				}
-				// Set the tap vs. clean mix
+			// Set the tap vs. clean mix
+			if (isReverse)
+				newTapGains[count - 1] = (1 - gain);
+			else
 				newTapGains[0] = (1 - gain);
-			}
+	
 			this->tapGains = newTapGains;
 			this->tapPosition = newTapPosition;
 			isDirty = true;
