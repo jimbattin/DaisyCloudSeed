@@ -133,7 +133,10 @@ namespace CloudSeed
 				for (int j = 0; j < cnt; j++)
 				{
 					auto idx = (index + tapPos[j]) % len;
-					output[i] += buffer[idx] * tapGain[j];
+					if (isReverse)
+						output[i] += buffer[idx] * tapGain[cnt - (j + 1)];
+					else
+						output[i] += buffer[idx] * tapGain[j];
 				}
 
 				index--;
