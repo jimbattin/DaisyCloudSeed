@@ -26,6 +26,10 @@ constexpr float MAKEUP_GAIN_STRENGTH = 0.8f;  // Max additional gain when fully 
 constexpr int NUM_SWITCHES = 3;
 constexpr float FLOAT_EPSILON = 1e-6f;
 
+// Volatile global variable used to prevent optimization
+volatile float dummy_trig_value = 0.0f;
+
+
 #ifndef M_PI_2
 #define M_PI_2 1.57079632679489661923  // π/2 for equal-power curves
 #endif
@@ -140,7 +144,7 @@ constexpr int NUM_PRESETS = sizeof(PRESETS) / sizeof(PRESETS[0]);
 // Persistent Settings
 struct Settings {
     int version;        // Version of the settings struct
-    int currentPreset;  // Currently selected preset (0-8)
+    int currentPreset;  // Currently selected preset (0-9)
 
     // Overloading the != operator
     // This is necessary as this operator is used in the PersistentStorage source code
@@ -539,7 +543,7 @@ int main(void) {
     state.prevDelayTime = 0.0f;
     state.prevDiffusion = 0.0f;
     state.prevTapDecay = 0.0f;
-    state.prevNumDelayLines = 2.0f; // Start with 2 delay lines (no switches pressed)
+    state.prevNumDelayLines = 0.0f; // Let the audio callback capture the real value of active lines
     state.prevReverseTaps = false;
 
     // Initialize state
@@ -600,6 +604,9 @@ int main(void) {
         // Update LED blink state machine
         updateBlinkState();
 
-        System::Delay(10);
+        // This keeps power-hungry transistors active in the STM32, preventing it from entering
+        // a low power state every time we exit the audio callback. This "work" greatly reduces an
+        // audible 1khz whine.
+        dummy_trig_value = sinf(0.12345f);
     }
 }
