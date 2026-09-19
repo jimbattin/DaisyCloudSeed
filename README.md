@@ -3,10 +3,13 @@ This is a fork from https://github.com/optilude/DaisyCloudSeed a fork that impro
 
 This fork extends those capabilities and adds a few extras:
 
+- Bloom switch: The 4th switch enables a "Bloom" effect, similar to a "reverse reverb"
+  (This is accomplished by reversing the order of tap gains. Has no effect on patches with a single tap.)
 - More program storage (Moved the application to SRAM)
 - Wider range of preset support offered by placing a limit on the number of delay lines for each preset
 - *Through the Looking Glass* is available as preset 9 (Delay lines capped at 3 for this one only)
 - *Dark Plate*: Preset #10 mostly adapted from from Ghost Note Audio's CloudSeedCore
+- Minimum delay line count is 2 rather than 1 (maximum is still 5 where applicable)
 
 # DaisyCloudSeed (GuitarML fork for Terrarium)
 Cloud Seed is an open source algorithmic reverb plugin under the MIT license, which can be found at [ValdemarOrn/CloudSeed](https://github.com/ValdemarOrn/CloudSeed).
@@ -14,9 +17,7 @@ DaisyCloudSeed is a port to the Daisy environment for running on a Daisy Patch u
 for use on the Terrarium guitar pedal. The processing has been changed to mono (from stereo), which allows up to 5 delay lines,
 and fills out all of the Terrarium's controls. 
 
-Watch the video demo on [YouTube](https://youtu.be/j-SGRWxBjz0)
-
-![app](https://github.com/GuitarML/DaisyCloudSeed/blob/master/petal/pedal.jpg)
+![Pedal Picture](petal/pedal.png)
 
 Download the cloudseed.bin for Daisy Seed from the [Releases](https://github.com/GuitarML/DaisyCloudSeed/releases) page.
 
@@ -49,7 +50,8 @@ make program-dfu
 | Ctrl 4 | Late Reverberation Feedback | Adjusts amount of signal fed back through the delay line. |
 | Ctrl 5 | Early Reverberation Dampening | Controls amount of dampening for the early reverb stage. Actual parameter name is "TapDecay" |
 | Ctrl 6 | Late Reverberation Decay | Adjust the decay time of the late reverberation stage. |
-| SW 1 - 4 | Selectable Delay Lines | Turn on or off to engage from 1 to 5 delay lines (1 delay line is always on) The order doesn't matter, just the total number that are on. (i.e., 1st and 4th switch on is the same as 2nd and 3rd switch on)|
+| SW 1 - 3 | Selectable Delay Lines | Turn on or off to engage from 2 to 5 delay lines (2 delay lines are always on) The order doesn't matter, just the total number that are on. (i.e., 1st and 3rd switch on is the same as 2nd and 3rd switch on)|
+| SW 4 | Bloom | Reverses the order of multi-tap delay gains, resulting in subsequent taps getting louder rather than quietier. |
 | FS 1 | Bypass/Active | Bypass / effect engaged |
 | FS 2 | Cycle Preset | Loads the next available Preset, starts at beginning after the last in the list. These are the same as the original Cloud Seed plugin presets, except for "Through the Looking Glass" |
 | LED 1 | Bypass/Active Indicator |Illuminated when effect is set to Active |

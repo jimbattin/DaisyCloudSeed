@@ -100,7 +100,7 @@ namespace CloudSeed
 			parameters[(int)Parameter::CutoffEnabled] = 1.0;
 			parameters[(int)Parameter::LateStageTap] = 1.0;
 			parameters[(int)Parameter::Interpolation] = 0.0;
-
+			// parameters[(int)Parameter::isReverse] = 0.0;
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 			{
 				SetParameter((Parameter)value, parameters[value]);
@@ -159,7 +159,7 @@ namespace CloudSeed
 			parameters[(int)Parameter::CutoffEnabled] = 1.0;
 			parameters[(int)Parameter::LateStageTap] = 0.0;
 			parameters[(int)Parameter::Interpolation] = 1.0;
-
+			// parameters[(int)Parameter::isReverse] = 0.0;
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 			{
 				SetParameter((Parameter)value, parameters[value]);
@@ -218,7 +218,7 @@ namespace CloudSeed
 			parameters[(int)Parameter::CutoffEnabled] = 1.0;
 			parameters[(int)Parameter::LateStageTap] = 1.0;
 			parameters[(int)Parameter::Interpolation] = 0.0;
-
+			// parameters[(int)Parameter::isReverse] = 0.0;
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 			{
 				SetParameter((Parameter)value, parameters[value]);
@@ -276,7 +276,7 @@ namespace CloudSeed
 			parameters[(int)Parameter::CutoffEnabled] = 1.0;
 			parameters[(int)Parameter::LateStageTap] = 1.0;
 			parameters[(int)Parameter::Interpolation] = 1.0;
-
+			// parameters[(int)Parameter::isReverse] = 0.0;
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 			{
 				SetParameter((Parameter)value, parameters[value]);
@@ -334,6 +334,7 @@ namespace CloudSeed
 			parameters[(int)Parameter::CutoffEnabled] = 0.0;
 			parameters[(int)Parameter::LateStageTap] = 0.0;
 			parameters[(int)Parameter::Interpolation] = 1.0;
+			// parameters[(int)Parameter::isReverse] = 0.0;
 
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 			{
@@ -392,7 +393,7 @@ namespace CloudSeed
 			parameters[(int)Parameter::CutoffEnabled] = 1.0;
 			parameters[(int)Parameter::LateStageTap] = 1.0;
 			parameters[(int)Parameter::Interpolation] = 0.0;
-
+			// parameters[(int)Parameter::isReverse] = 0.0;
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 			{
 				SetParameter((Parameter)value, parameters[value]);
@@ -451,6 +452,7 @@ namespace CloudSeed
 			parameters[(int)Parameter::CutoffEnabled] = 0.0;
 			parameters[(int)Parameter::LateStageTap] = 1.0;
 			parameters[(int)Parameter::Interpolation] = 1.0;
+			// parameters[(int)Parameter::isReverse] = 0.0;
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 			{
 				SetParameter((Parameter)value, parameters[value]);
@@ -508,6 +510,7 @@ namespace CloudSeed
 			parameters[(int)Parameter::CutoffEnabled] = 0;
 			parameters[(int)Parameter::LateStageTap] = 1;
 			parameters[(int)Parameter::Interpolation] = 1;
+			// parameters[(int)Parameter::isReverse] = 0.0;
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 			{
 				SetParameter((Parameter)value, parameters[value]);
@@ -565,6 +568,7 @@ namespace CloudSeed
 			parameters[(int)Parameter::CutoffEnabled] = 1.0;
 			parameters[(int)Parameter::LateStageTap] = 1.0;
 			parameters[(int)Parameter::Interpolation] = 1.0;
+			// parameters[(int)Parameter::isReverse] = 0.0;
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 			{
 				SetParameter((Parameter)value, parameters[value]);
@@ -622,6 +626,7 @@ namespace CloudSeed
 			parameters[(int)Parameter::CutoffEnabled] = 1.0;
 			parameters[(int)Parameter::LateStageTap] = 1.0;
 			parameters[(int)Parameter::Interpolation] = 1.0;
+			// parameters[(int)Parameter::isReverse] = 0.0;
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 			{
 				SetParameter((Parameter)value, parameters[value]);
@@ -668,6 +673,9 @@ namespace CloudSeed
 			case Parameter::TapLength:                 return (int)(P(Parameter::TapLength) * 500);
 			case Parameter::TapGain:                   return ValueTables::Get(P(Parameter::TapGain), ValueTables::Response2Dec);
 			case Parameter::TapDecay:                  return P(Parameter::TapDecay);
+			case Parameter::isReverse:                 return P(Parameter::isReverse);
+
+				// Diffusion
 
 			case Parameter::DiffusionEnabled:          return P(Parameter::DiffusionEnabled) < 0.5 ? 0.0 : 1.0;
 			case Parameter::DiffusionStages:           return 1 + (int)(P(Parameter::DiffusionStages) * (AllpassDiffuser::MaxStageCount - 0.001));
