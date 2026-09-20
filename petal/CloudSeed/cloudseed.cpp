@@ -130,7 +130,7 @@ const PresetConfig PRESETS[] = {
         .initFunction = &CloudSeed::ReverbController::initFactoryThroughTheLookingGlass,
         .blinkPattern = {.numBlinks = 9, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
         .name = "Through the Looking Glass",
-        .max_delay_lines = 3.0f
+        .max_delay_lines = 4.0f
     },
     {
         .initFunction = &CloudSeed::ReverbController::initFactoryDarkPlate,
