@@ -15,6 +15,7 @@
 #include "../../CloudSeed/FastSin.h"
 #include "../../CloudSeed/AudioLib/ValueTables.h"
 #include "../../CloudSeed/AudioLib/MathDefs.h"
+#include "AudioPipelineScheduler.h"
 
 using namespace daisy;
 using namespace daisysp;
@@ -22,13 +23,34 @@ using namespace terrarium;  // This is important for mapping the correct control
 
 // Constants
 constexpr size_t AUDIO_BUFFER_SIZE = 48;
+constexpr size_t CHUNK_SIZE = 8;          // matches CloudSeed's internal ModulationUpdateRate (8 samples), a natural processing granularity already used by ModulatedDelay/ModulatedAllpass
+constexpr size_t LATENCY_BLOCKS = 2;      // fixed pipeline latency, in AUDIO_BUFFER_SIZE blocks (~2ms @ 48kHz/48-sample blocks)
+constexpr uint32_t JITTER_RANGE_US = 40;  // +/-20us dither applied to each slice's schedule
 constexpr float OUTPUT_VOLUME_BOOST = 1.2f;
 constexpr float MAKEUP_GAIN_STRENGTH = 0.8f;  // Max additional gain when fully wet (0.0-1.0)
 constexpr int NUM_SWITCHES = 3;
 constexpr float FLOAT_EPSILON = 1e-6f;
 
-// Volatile global variable used to prevent optimization
+// Scratch buffer in external SDRAM, dedicated to filler work and never
+// touched by the reverb engine. Reading/writing it approximates the
+// memory-bus activity profile of real reverb processing, so idle time
+// doesn't look electrically different from busy time.
+DSY_SDRAM_BSS float dummy_sdram_buffer[64];
+size_t dummy_sdram_index = 0;
+
+// Volatile global variable used to prevent the filler work below from being
+// optimized away.
 volatile float dummy_trig_value = 0.0f;
+
+// Touches SDRAM (read + write) and the FPU on every call. Run continuously
+// whenever there's no audio work ready, to keep dynamic current draw closer
+// to constant instead of idling between bursts of real work.
+void RunFillerWork() {
+    float v = dummy_sdram_buffer[dummy_sdram_index];
+    dummy_sdram_buffer[dummy_sdram_index] = sinf(v + 0.12345f);
+    dummy_sdram_index = (dummy_sdram_index + 1) % 64;
+    dummy_trig_value = dummy_sdram_buffer[dummy_sdram_index];
+}
 
 
 #ifndef M_PI_2
@@ -193,6 +215,17 @@ struct PedalState {
 DaisyPetal hw;
 PedalState state;
 CloudSeed::ReverbController* reverb = nullptr;
+AudioPipelineScheduler<AUDIO_BUFFER_SIZE, CHUNK_SIZE, LATENCY_BLOCKS> audioScheduler;
+
+// Diagnostics: incremented if the main-loop scheduler falls behind schedule.
+// audioInputXrunCount: the ISR wrote a new input block before the main loop
+// had drained the previous one. audioOutputUnderrunCount: the ISR needed a
+// delayed output block before the main loop had finished computing it (the
+// ISR substitutes silence for that block). Both should stay at 0 in normal
+// operation with the default 2-block latency budget; a nonzero, growing
+// count means LATENCY_BLOCKS needs to be increased.
+volatile uint32_t audioInputXrunCount = 0;
+volatile uint32_t audioOutputUnderrunCount = 0;
 
 // Persistent Storage Declaration. Using type Settings and passed the device's qspi handle
 PersistentStorage<Settings> SavedSettings(hw.seed.qspi);
@@ -488,10 +521,18 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     }
 
     // Apply effect or bypass
-    // IMPORTANT: Skip reverb processing if preset change is in progress to avoid race condition
-    // We want to compute our reverb output even when bypassed to minimize 1khz whine
+    // IMPORTANT: Skip the pipeline entirely if a preset change is in progress: cyclePreset()
+    // (called from the main loop) clears/reinitializes the reverb's buffers and re-primes the
+    // ring buffers below (see main()), so touching them here would race.
     if (!state.presetChangeInProgress) {
-        reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
+        // Feed the fixed-latency pipeline: push fresh input, pull the delayed wet block that
+        // was computed CHUNK_SIZE samples at a time by audioScheduler.Process() in the main
+        // loop. reverb->Process() no longer runs here -- it no longer runs as one large SDRAM
+        // burst per callback.
+        if (!audioScheduler.PushInput(audioInputBuffer))
+            audioInputXrunCount++;
+        if (!audioScheduler.PullOutput(audioOutputBuffer))
+            audioOutputUnderrunCount++;
 
         // Calculate dynamic makeup gain using equal-power crossfade compensation
         // This maintains perceived loudness as dry/wet balance changes
@@ -527,6 +568,7 @@ int main(void) {
     __set_FPSCR(__get_FPSCR() | (1u << 24)); // FZ: flush denormals to zero in hardware
     hw.Init();
     const float sampleRate = hw.AudioSampleRate();
+    const uint32_t blockPeriodUs = (uint32_t)(1000000.0 * AUDIO_BUFFER_SIZE / sampleRate);
 
     // Initialize audio processing libraries
     AudioLib::ValueTables::Init();
@@ -579,6 +621,9 @@ int main(void) {
     loadSettings();
 
     // Start audio processing
+    // Prime the audio pipeline: LATENCY_BLOCKS of silence in the output ring
+    // establishes the fixed round-trip delay before the reverb starts producing real audio.
+    audioScheduler.Init(System::GetUs(), blockPeriodUs, JITTER_RANGE_US);
     hw.StartAdc();
     hw.StartAudio(audioCallback);
 
@@ -593,6 +638,9 @@ int main(void) {
             state.presetChangeInProgress = true;
 
             cyclePreset();
+            // Flush and re-prime the pipeline so no stale pre-change audio lingers
+            // in the ring buffers once processing resumes.
+            audioScheduler.Init(System::GetUs(), blockPeriodUs, JITTER_RANGE_US);
             saveSettings();
             startBlinkSequence(getPresetBlinkPattern(state.currentPreset));
 
@@ -612,9 +660,15 @@ int main(void) {
         // Update LED blink state machine
         updateBlinkState();
 
-        // This keeps power-hungry transistors active in the STM32, preventing it from entering
-        // a low power state every time we exit the audio callback. This "work" greatly reduces an
-        // audible 1khz whine.
-        dummy_trig_value = sinf(0.12345f);
+        // Advance the background reverb-processing pipeline by at most one
+        // CHUNK_SIZE-sample slice, paced across the full block period, then run the
+        // SDRAM-touching filler so idle time between slices doesn't look electrically
+        // different from busy time. Together these keep dynamic current draw roughly
+        // constant instead of oscillating at the 1kHz audio-block rate.
+        audioScheduler.Process(System::GetUs(),
+            [](float* in, float* out, size_t n) {
+                reverb->Process(in, out, (int)n);
+            });
+        RunFillerWork();
     }
 }
