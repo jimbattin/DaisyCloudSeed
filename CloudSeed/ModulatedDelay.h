@@ -50,8 +50,8 @@ namespace CloudSeed
 
 		~ModulatedDelay()
 		{
-			delete delayBuffer;
-			delete output;
+			// delayBuffer/output are placement-new'd into the SDRAM bump-allocator
+			// pool (custom_pool_allocate) and are never freed; nothing to delete here.
 		}
 
 		float* GetOutput()
@@ -91,7 +91,7 @@ namespace CloudSeed
 		{
 			modPhase += ModRate * ModulationUpdateRate;
 			if (modPhase > 1)
-				modPhase = std::fmod(modPhase, 1.0);
+				modPhase = std::fmod(modPhase, 1.0f);
 
 			auto mod = FastSin::Get(modPhase);
 			auto totalDelay = SampleDelay + ModAmount * mod;

@@ -57,8 +57,8 @@ namespace CloudSeed
 
 		~MultitapDiffuser()
 		{
-			delete buffer;
-			delete output;
+			// buffer/output are placement-new'd into the SDRAM bump-allocator pool
+			// (custom_pool_allocate) and are never freed; nothing to delete here.
 		}
 
 
@@ -132,7 +132,8 @@ namespace CloudSeed
 
 				for (int j = 0; j < cnt; j++)
 				{
-					auto idx = (index + tapPos[j]) % len;
+					auto idx = index + tapPos[j];
+					if (idx >= len) idx -= len;
 					output[i] += buffer[idx] * tapGain[j];
 				}
 

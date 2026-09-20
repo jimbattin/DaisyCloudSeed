@@ -115,6 +115,7 @@ CFLAGS += -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@:%.o=%.d)"
 CPPFLAGS = $(CFLAGS)
 CPPFLAGS += \
 -fno-exceptions \
+-ffast-math \
 -finline-functions \
 -fno-aggressive-loop-optimizations
 

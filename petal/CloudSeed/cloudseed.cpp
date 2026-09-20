@@ -6,6 +6,7 @@
 #include "daisy_petal.h"
 #include "daisysp.h"
 #include "terrarium.h"
+#include "cmsis_gcc.h"
 #include <cmath>
 #include <array>
 
@@ -383,7 +384,6 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // Audio buffers
     static float audioInputBuffer[AUDIO_BUFFER_SIZE];
     static float audioOutputBuffer[AUDIO_BUFFER_SIZE];
-    static float audioBypassBuffer[AUDIO_BUFFER_SIZE];
 
     hw.ProcessAnalogControls();
     hw.ProcessDigitalControls();
@@ -485,7 +485,6 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // Copy input to buffers
     for (size_t i = 0; i < size; i++) {
         audioInputBuffer[i] = in[0][i]; // left channel
-        audioBypassBuffer[i] = in[0][i]; // for bypass usage
     }
 
     // Apply effect or bypass
@@ -507,15 +506,15 @@ static void audioCallback(AudioHandle::InputBuffer  in,
 
         for (size_t i = 0; i < size; i++) {
             if (state.bypass) {
-                out[0][i] = audioBypassBuffer[i];
-            } 
+                out[0][i] = in[0][i];
+            }
             else {
                 out[0][i] = audioOutputBuffer[i] * makeupGain;
             }
         }
     } else { // Preset change in progress, bypass audio to avoid race condition
         for (size_t i = 0; i < size; i++) {
-            out[0][i] = audioBypassBuffer[i];
+            out[0][i] = in[0][i];
         }
     }
 }
@@ -525,6 +524,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
  */
 
 int main(void) {
+    __set_FPSCR(__get_FPSCR() | (1u << 24)); // FZ: flush denormals to zero in hardware
     hw.Init();
     const float sampleRate = hw.AudioSampleRate();
 

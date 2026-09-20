@@ -2,7 +2,6 @@
 #ifndef REVERBCHANNEL
 #define REVERBCHANNEL
 
-#include <map>
 #include <memory>
 #include "Parameter.h"
 #include "ModulatedDelay.h"
@@ -39,7 +38,7 @@ namespace CloudSeed
                 //            4/26/2023 GuitarML fork of DaisyCloudSeed uses 4, able to increase for Mono Only Terrarium platform (mono guitar pedal using Daisy Seed)
 		static const int TotalLineCount = 5;  
 
-		map<Parameter, float> parameters;
+		float parameters[(int)Parameter::Count];
 		int samplerate;
 		int bufferSize;
 
@@ -58,6 +57,7 @@ namespace CloudSeed
 
 		// Used the the main process loop
 		int lineCount;
+		float perLineGain;
 
 		bool highPassEnabled;
 		bool lowPassEnabled;
@@ -86,10 +86,11 @@ namespace CloudSeed
 			this->bufferSize = bufferSize;
 
 			for (auto value = 0; value < (int)Parameter::Count; value++)
-				this->parameters[static_cast<Parameter>(value)] = 0.0;
+				this->parameters[value] = 0.0f;
 
 			crossSeed = 0.0;
 			lineCount = TotalLineCount;
+			perLineGain = 1.0f / std::sqrt((float)lineCount);
 			diffuser.SetInterpolationEnabled(true);
 			highPass.SetCutoffHz(20);
 			lowPass.SetCutoffHz(20000);
@@ -103,12 +104,12 @@ namespace CloudSeed
 
 		~ReverbChannel()
 		{
+			// lines/tempBuffer/lineOutBuffer/outBuffer are placement-new'd into the
+			// SDRAM bump-allocator pool (custom_pool_allocate) and are never freed;
+			// the pool has no matching deallocator. Explicitly run DelayLine's
+			// destructor without attempting to deallocate its pool-backed storage.
 			for (auto line : lines)
-				delete line;
-
-			delete tempBuffer;
-			delete lineOutBuffer;
-			delete outBuffer;
+				line->~DelayLine();
 		}
 
 		int GetSamplerate()
@@ -127,7 +128,7 @@ namespace CloudSeed
 				lines[i]->SetSamplerate(samplerate);
 			}
 
-			auto update = [&](Parameter p) { SetParameter(p, parameters[p]); };
+			auto update = [&](Parameter p) { SetParameter(p, parameters[(int)p]); };
 			update(Parameter::PreDelay);
 			update(Parameter::TapLength);
 			update(Parameter::DiffusionDelay);
@@ -152,7 +153,7 @@ namespace CloudSeed
 
 		void SetParameter(Parameter para, float value)
 		{
-			parameters[para] = value;
+			parameters[(int)para] = value;
 
 			switch (para)
 			{
@@ -201,8 +202,8 @@ namespace CloudSeed
 				break;
 
 			case Parameter::LineCount:
-				lineCount = (int)value; // Originally commented out
-                //perLineGain = GetPerLineGain();  // In original Cloud Seed
+				lineCount = (int)value;
+				perLineGain = 1.0f / std::sqrt((float)lineCount);
 				break;
 			case Parameter::LineDelay:
 				UpdateLines();
@@ -401,7 +402,6 @@ namespace CloudSeed
 				}
 			}
 
-			auto perLineGain = GetPerLineGain();
 			Utils::Gain(tempBuffer, perLineGain, len);
 			Utils::Copy(tempBuffer, lineOutBuffer, len);
 
@@ -436,22 +436,17 @@ namespace CloudSeed
 
 
 	private:
-		float GetPerLineGain()
-		{
-			return 1.0 / std::sqrt(lineCount);
-		}
-
 		void UpdateLines()
 		{
-			auto lineDelaySamples = (int)Ms2Samples(parameters[Parameter::LineDelay]);
-			auto lineDecayMillis = parameters[Parameter::LineDecay] * 1000;
+			auto lineDelaySamples = (int)Ms2Samples(parameters[(int)Parameter::LineDelay]);
+			auto lineDecayMillis = parameters[(int)Parameter::LineDecay] * 1000;
 			auto lineDecaySamples = Ms2Samples(lineDecayMillis);
 
-			auto lineModAmount = Ms2Samples(parameters[Parameter::LineModAmount]);
-			auto lineModRate = parameters[Parameter::LineModRate];
+			auto lineModAmount = Ms2Samples(parameters[(int)Parameter::LineModAmount]);
+			auto lineModRate = parameters[(int)Parameter::LineModRate];
 
-			auto lateDiffusionModAmount = Ms2Samples(parameters[Parameter::LateDiffusionModAmount]);
-			auto lateDiffusionModRate = parameters[Parameter::LateDiffusionModRate];
+			auto lateDiffusionModAmount = Ms2Samples(parameters[(int)Parameter::LateDiffusionModAmount]);
+			auto lateDiffusionModRate = parameters[(int)Parameter::LateDiffusionModRate];
 
 			auto delayLineSeeds = ShaRandom::Generate(delayLineSeed, (int)lines.size() * 3, crossSeed);
 			int count = (int)lines.size();
