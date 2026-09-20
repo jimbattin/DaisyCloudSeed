@@ -7,9 +7,12 @@ This fork extends those capabilities and adds a few extras:
   (This is accomplished by reversing the order of tap gains. Has no effect on patches with a single tap.)
 - More program storage (Moved the application to SRAM)
 - Wider range of preset support offered by placing a limit on the number of delay lines for each preset
-- *Through the Looking Glass* is available as preset 9 (Delay lines capped at 3 for this one only)
+- *Through the Looking Glass* is available as preset 9 (Delay lines capped at 4 for this one only)
 - *Dark Plate*: Preset #10 mostly adapted from from Ghost Note Audio's CloudSeedCore
 - Minimum delay line count is 2 rather than 1 (maximum is still 5 where applicable)
+- Bypass state is saved between power cycles
+- Agent-guided performance optimizations
+- Reduced 1khz whine while active or bypassed 
 
 # DaisyCloudSeed (GuitarML fork for Terrarium)
 Cloud Seed is an open source algorithmic reverb plugin under the MIT license, which can be found at [ValdemarOrn/CloudSeed](https://github.com/ValdemarOrn/CloudSeed).

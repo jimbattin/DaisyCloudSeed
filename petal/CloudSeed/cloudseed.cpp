@@ -6,6 +6,7 @@
 #include "daisy_petal.h"
 #include "daisysp.h"
 #include "terrarium.h"
+#include "cmsis_gcc.h"
 #include <cmath>
 #include <array>
 
@@ -36,7 +37,7 @@ volatile float dummy_trig_value = 0.0f;
 
 // Increment this when changing the settings struct so the software will know
 // to reset to defaults if this ever changes.
-#define SETTINGS_VERSION 1
+#define SETTINGS_VERSION 2
 
 // Switch indices for delay line control
 static const int DELAY_LINE_SWITCHES[NUM_SWITCHES] = {
@@ -129,7 +130,7 @@ const PresetConfig PRESETS[] = {
         .initFunction = &CloudSeed::ReverbController::initFactoryThroughTheLookingGlass,
         .blinkPattern = {.numBlinks = 9, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
         .name = "Through the Looking Glass",
-        .max_delay_lines = 3.0f
+        .max_delay_lines = 4.0f
     },
     {
         .initFunction = &CloudSeed::ReverbController::initFactoryDarkPlate,
@@ -145,13 +146,15 @@ constexpr int NUM_PRESETS = sizeof(PRESETS) / sizeof(PRESETS[0]);
 struct Settings {
     int version;        // Version of the settings struct
     int currentPreset;  // Currently selected preset (0-9)
+    bool bypass;         // Persisted bypass state (true = pedal was bypassed at last save)
 
     // Overloading the != operator
     // This is necessary as this operator is used in the PersistentStorage source code
     bool operator!=(const Settings& a) const {
         return !(
             a.version == version &&
-            a.currentPreset == currentPreset
+            a.currentPreset == currentPreset &&
+            a.bypass == bypass
         );
     }
 };
@@ -180,6 +183,7 @@ struct PedalState {
     bool bypass;
     int currentPreset;
     bool triggerPresetChange;    // Set true in audio callback when preset switch pressed
+    bool triggerBypassSave;      // Set true in audio callback when bypass is toggled
     bool triggerSettingsSave;    // Set true when settings need to be saved
     bool triggerPresetBlink;     // Set true when we should blink LED to show preset
     bool presetChangeInProgress; // Set true while preset is being changed (prevents audio processing)
@@ -271,6 +275,11 @@ void loadSettings() {
         state.currentPreset = 0;
     }
 
+    // Load bypass state (no range validation needed: bool has no invalid values
+    // once the SETTINGS_VERSION check above guarantees a freshly-defaulted struct
+    // on any layout mismatch)
+    state.bypass = localSettings.bypass;
+
     loadPreset(state.currentPreset);
 }
 
@@ -280,6 +289,7 @@ void saveSettings() {
 
     localSettings.version = SETTINGS_VERSION;
     localSettings.currentPreset = state.currentPreset;
+    localSettings.bypass = state.bypass;
 
     state.triggerSettingsSave = true;
 }
@@ -397,6 +407,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     if (hw.switches[Terrarium::FOOTSWITCH_1].RisingEdge()) {
         state.bypass = !state.bypass;
         state.led1.Set(state.bypass ? 0.0f : 1.0f);
+        state.triggerBypassSave = true;
     }
 
     // Cycle available models (actual preset change happens in main loop)
@@ -481,14 +492,15 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // Process audio
     //
 
-    // Copy input to buffer
+    // Copy input to buffers
     for (size_t i = 0; i < size; i++) {
         audioInputBuffer[i] = in[0][i]; // left channel
     }
 
     // Apply effect or bypass
     // IMPORTANT: Skip reverb processing if preset change is in progress to avoid race condition
-    if (!state.bypass && !state.presetChangeInProgress) {
+    // We want to compute our reverb output even when bypassed to minimize 1khz whine
+    if (!state.presetChangeInProgress) {
         reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
 
         // Calculate dynamic makeup gain using equal-power crossfade compensation
@@ -503,11 +515,16 @@ static void audioCallback(AudioHandle::InputBuffer  in,
         float makeupGain = OUTPUT_VOLUME_BOOST * (1.0f + compensation * MAKEUP_GAIN_STRENGTH);
 
         for (size_t i = 0; i < size; i++) {
-            out[0][i] = audioOutputBuffer[i] * makeupGain;
+            if (state.bypass) {
+                out[0][i] = in[0][i];
+            }
+            else {
+                out[0][i] = audioOutputBuffer[i] * makeupGain;
+            }
         }
-    } else {
+    } else { // Preset change in progress, bypass audio to avoid race condition
         for (size_t i = 0; i < size; i++) {
-            out[0][i] = in[0][i]; // left channel only
+            out[0][i] = in[0][i];
         }
     }
 }
@@ -517,6 +534,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
  */
 
 int main(void) {
+    __set_FPSCR(__get_FPSCR() | (1u << 24)); // FZ: flush denormals to zero in hardware
     hw.Init();
     const float sampleRate = hw.AudioSampleRate();
 
@@ -549,6 +567,7 @@ int main(void) {
     // Initialize state
     state.bypass = true;
     state.triggerPresetChange = false;
+    state.triggerBypassSave = false;
     state.triggerSettingsSave = false;
     state.triggerPresetBlink = false;
     state.presetChangeInProgress = false;
@@ -563,12 +582,18 @@ int main(void) {
     // Initialize persistent storage with default settings
     Settings defaultSettings = {
         SETTINGS_VERSION,  // version
-        0                  // currentPreset (default to Chorus preset)
+        0,                 // currentPreset (default to Chorus preset)
+        true               // bypass (default to bypassed/silent on first boot)
     };
     SavedSettings.Init(defaultSettings);
 
     // Load settings from persistent storage (with resilience to failures)
     loadSettings();
+
+    // Reflect the restored bypass state on LED1 (Init() above only configured GPIO
+    // polarity; it did not light LED1 for a restored non-bypassed startup state)
+    state.led1.Set(state.bypass ? 0.0f : 1.0f);
+    state.led1.Update();
 
     // Start audio processing
     hw.StartAdc();
@@ -593,6 +618,13 @@ int main(void) {
             System::Delay(10);
 
             state.presetChangeInProgress = false; // Re-enable audio processing
+        }
+
+        // Handle bypass persistence (moved from audio callback for better performance,
+        // same deferred-write pattern as preset changes above)
+        if (state.triggerBypassSave) {
+            state.triggerBypassSave = false;
+            saveSettings();
         }
 
         // Handle settings save (moved from audio callback for better performance)

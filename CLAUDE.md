@@ -96,7 +96,8 @@ KNOB_4: Late Reverberation Feedback (0.5-1.0)
 KNOB_5: Early Reverberation Dampening/TapDecay (0.0-1.0)
 KNOB_6: Late Reverberation Decay (0.0-1.0)
 
-SWITCH_1-4: Delay line enable (additive, 1-5 total lines)
+SWITCH_1-3: Delay line enable (additive, 2-5 total lines)
+SWITCH_4: Activates "Bloom" mode which reverses the gain on multitap delays
 FOOTSWITCH_1: Bypass toggle
 FOOTSWITCH_2: Preset cycle (9 presets)
 ```
@@ -227,17 +228,6 @@ Based on Mutable Instruments Rings/Clouds reverb algorithm using Griesinger topo
 
 File: [petal/CloudyReverb/cloudyreverb.cpp](petal/CloudyReverb/cloudyreverb.cpp)
 
-```cpp
-// Current mapping (lines 63-97):
-KNOB_1: Dry/Wet Mix (0.0-1.0)
-KNOB_2: Input Level (0.0-1.0)
-KNOB_3: Reverb Time/Feedback (0.0-1.0)
-KNOB_4: Diffusion (0.0-1.0)
-KNOB_5: Low Pass Filter (0.0-1.0)
-KNOB_6: Unused
-
-FOOTSWITCH_1: Bypass toggle
-```
 
 ### Core Class
 
@@ -551,7 +541,9 @@ hw.led2.Update();
 - 5 delay lines with modulation
 - Multiple diffusion stages
 - Extensive filtering
-- Runs at ~70-80% CPU (estimated)
+- Runs at ~70-80% CPU (estimated); this estimate predates the denormal-stall (FPU
+  flush-to-zero) and `std::map` parameter-lookup fixes documented in
+  [PERFORMANCE.md](PERFORMANCE.md), so real headroom is now better than shown here
 
 **CloudyReverb**: Lightweight
 - Optimized Mutable Instruments algorithm
@@ -569,11 +561,10 @@ hw.led2.Update();
 
 ### Optimization Tips
 
-1. **Use hard float**: Already enabled (`-mfloat-abi=hard`)
-2. **Optimize compilation**: Already using `-O3`
-3. **Minimize parameter updates**: Use smoothing (Parameter class)
-4. **Avoid dynamic allocation**: Use pre-allocated buffers
-5. **Profile with map file**: Check `build/*.map` for code size
+See [PERFORMANCE.md](PERFORMANCE.md) for the concrete list of performance/correctness
+fixes applied to the CloudSeed DSP (FPU denormal handling, parameter storage, hot-loop
+modulo/precision fixes, placement-new/delete destructor safety, and build flags), each
+with the exact file/line and pattern it addresses.
 
 ## Further Resources
 
