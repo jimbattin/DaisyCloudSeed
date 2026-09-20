@@ -383,6 +383,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // Audio buffers
     static float audioInputBuffer[AUDIO_BUFFER_SIZE];
     static float audioOutputBuffer[AUDIO_BUFFER_SIZE];
+    static float audioBypassBuffer[AUDIO_BUFFER_SIZE];
 
     hw.ProcessAnalogControls();
     hw.ProcessDigitalControls();
@@ -481,14 +482,16 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // Process audio
     //
 
-    // Copy input to buffer
+    // Copy input to buffers
     for (size_t i = 0; i < size; i++) {
         audioInputBuffer[i] = in[0][i]; // left channel
+        audioBypassBuffer[i] = in[0][i]; // for bypass usage
     }
 
     // Apply effect or bypass
     // IMPORTANT: Skip reverb processing if preset change is in progress to avoid race condition
-    if (!state.bypass && !state.presetChangeInProgress) {
+    // We want to compute our reverb output even when bypassed to minimize 1khz whine
+    if (!state.presetChangeInProgress) {
         reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
 
         // Calculate dynamic makeup gain using equal-power crossfade compensation
@@ -503,11 +506,16 @@ static void audioCallback(AudioHandle::InputBuffer  in,
         float makeupGain = OUTPUT_VOLUME_BOOST * (1.0f + compensation * MAKEUP_GAIN_STRENGTH);
 
         for (size_t i = 0; i < size; i++) {
-            out[0][i] = audioOutputBuffer[i] * makeupGain;
+            if (state.bypass) {
+                out[0][i] = audioBypassBuffer[i];
+            } 
+            else {
+                out[0][i] = audioOutputBuffer[i] * makeupGain;
+            }
         }
-    } else {
+    } else { // Preset change in progress, bypass audio to avoid race condition
         for (size_t i = 0; i < size; i++) {
-            out[0][i] = in[0][i]; // left channel only
+            out[0][i] = audioBypassBuffer[i];
         }
     }
 }
