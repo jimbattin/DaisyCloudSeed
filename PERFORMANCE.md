@@ -7,7 +7,7 @@ lived at, and the fix applied. No control mapping, preset, or audio topology cha
 
 ## 1. FPU flush-to-zero (denormal stall elimination)
 
-**Files**: `petal/CloudSeed/cloudseed.cpp`
+**Files**: `cloudseed.cpp`
 
 Reverb feedback paths decay exponentially toward zero every tail: `DelayLine::Process`'s
 feedback multiply (`CloudSeed/DelayLine.h:191`), `ModulatedAllpass::Process*`'s feedback
@@ -92,7 +92,7 @@ overload with no promotion/narrowing.
 **Files**: `CloudSeed/ModulatedDelay.h`, `CloudSeed/ModulatedAllpass.h`,
 `CloudSeed/MultitapDiffuser.h`, `CloudSeed/ReverbChannel.h`, `CloudSeed/DelayLine.h`
 
-The custom SDRAM allocator (`petal/CloudSeed/cloudseed.cpp`'s `custom_pool_allocate`) is a
+The custom SDRAM allocator (`./cloudseed.cpp`'s `custom_pool_allocate`) is a
 bump allocator with no free function — by design, since the `ReverbController` is
 constructed once and lives for the process lifetime. Most buffers are correctly
 constructed with placement `new (custom_pool_allocate(...)) T[...]` into this pool, but
@@ -114,14 +114,14 @@ future code path that does destroy one of these objects.
 `AllpassDiffuser.h`'s destructor (`delete filter` on plain `new ModulatedAllpass(...)`
 pointers) was already correctly paired and left untouched.
 
-## 7. Bump the petal application build to `-O3` + `-ffast-math`
+## 7. Bump the application build to `-O3` + `-ffast-math`
 
-**Files**: `petal/CloudSeed/Makefile`, `CloudSeed/Makefile`
+**Files**: `./Makefile`, `CloudSeed/Makefile`
 
-`petal/CloudSeed/cloudseed.cpp` built through `libdaisy/core/Makefile`'s default
+`./cloudseed.cpp` built through `libdaisy/core/Makefile`'s default
 `OPT ?= -O2`, one level below the `-O3` the `CloudSeed/` library itself already used.
 
-**Fix**: `petal/CloudSeed/Makefile` now sets `OPT = -O3` before including
+**Fix**: `./Makefile` now sets `OPT = -O3` before including
 `$(SYSTEM_FILES_DIR)/Makefile` (must precede the include since it uses a weak `?=`
 default), and appends `CPPFLAGS += -ffast-math` after the include. `CloudSeed/Makefile`
 adds `-ffast-math` to its existing `CPPFLAGS` list alongside `-fno-exceptions`, so the
@@ -135,7 +135,7 @@ and drops `errno`-setting overhead from `pow`/`sqrt`/`log10` calls.
 
 ## 8. Remove redundant bypass-buffer copy in the audio callback
 
-**File**: `petal/CloudSeed/cloudseed.cpp`
+**File**: `./cloudseed.cpp`
 
 `audioBypassBuffer[AUDIO_BUFFER_SIZE]` existed purely to echo the input back out when
 bypassed, filled by a full per-sample copy loop every block regardless of bypass state.
@@ -148,7 +148,7 @@ unnecessary.
 
 ## Verification performed
 
-1. **Build**: `./rebuild_libs.sh && cd petal/CloudSeed && make clean && make` completes
+1. **Build**: `make libs && make clean && make` completes
    with no errors and produces `build/cloudseed.bin`/`.elf`/`.hex`. Memory usage:
    SDRAM 77.10% of 64MB, SRAM (`.text`+`.data`) 28.48% of 480KB `BOOT_SRAM`.
 2. **Host-side behavioral smoke test**: a throwaway harness linked `ReverbController`

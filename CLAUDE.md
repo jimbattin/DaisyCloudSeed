@@ -2,43 +2,28 @@
 
 ## Project Overview
 
-This project implements two guitar effects DSPs for the Electrosmith Daisy Seed board mounted in a PedalPCB Terrarium guitar pedal enclosure:
+This project implements one guitar effect DSPs for the Electrosmith Daisy Seed board mounted in a PedalPCB Terrarium guitar pedal enclosure:
 
 1. **CloudSeed** - Advanced algorithmic reverb with 5 delay lines, 8 presets, and extensive control
-2. **CloudyReverb** - Lightweight reverb based on Mutable Instruments Rings/Clouds algorithm
 
 ## Directory Structure
 
 ```
 DaisyCloudSeed/
-├── CloudSeed/              # Core reverb algorithm library (builds libcloudseed.a)
+├── CloudSeed/             # Core reverb algorithm library (builds libcloudseed.a)
 │   ├── AudioLib/          # Audio utilities (Biquad, filters, ShaRandom)
 │   ├── Utils/             # SHA256 utilities
 │   ├── build/             # Build artifacts
 │   └── Makefile           # Library build configuration
 │
-├── petal/                  # Terrarium pedal implementations (MAIN WORKING AREA)
-│   ├── CloudSeed/         # CloudSeed for Terrarium (mono, 5 delay lines)
-│   │   ├── cloudseed.cpp  # Main application code
-│   │   └── Makefile       # Build configuration
-│   └── CloudyReverb/      # CloudyReverb for Terrarium
-│       ├── cloudyreverb.cpp
-│       └── Makefile
-│
-├── patch/                  # Daisy Patch implementations (stereo, reference)
-│   ├── CloudSeed/
-│   ├── CloudyReverb/
-│   ├── Granular/
-│   └── SamplePlayer/
-│
 ├── libdaisy/              # Hardware abstraction layer (Git submodule)
 ├── DaisySP/               # DSP library (Git submodule)
-├── eurorack/              # Mutable Instruments code (Git submodule)
 ├── Terrarium/             # Hardware definitions (Git submodule)
 │
-├── rebuild_libs.sh        # Build all libraries
-├── rebuild_all.sh         # Build everything
-└── .gitmodules           # Submodule definitions
+├── Makefile               # Makefile for this project (dependent libraries built with `libs` target)
+├── cloudseed.cpp          # Main application code
+├── PERFORMANCE.md         # Performance guidelines for agents
+└── .gitmodules            # Submodule definitions
 ```
 
 ## Hardware Platform
@@ -85,7 +70,7 @@ CloudSeed is based on the open-source CloudSeed VST plugin by ValdemarOrn, modif
 
 ### Control Mapping
 
-File: [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp)
+File: [cloudseed.cpp](cloudseed.cpp)
 
 ```cpp
 // Current mapping (lines 142-162):
@@ -104,7 +89,7 @@ FOOTSWITCH_2: Preset cycle (9 presets)
 
 ### Presets
 
-Ten factory presets are configured in an array-based system in [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp) (lines 72-133):
+Ten factory presets are configured in an array-based system in [cloudseed.cpp](cloudseed.cpp) (lines 72-133):
 
 1. Chorus (1 blink)
 2. Dull Echos (2 blinks)
@@ -130,7 +115,7 @@ Preset definitions use initialization functions from [CloudSeed/ReverbController
 
 The current preset is automatically saved to and loaded from QSPI flash memory, ensuring it persists across power cycles.
 
-**Implementation** ([petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp)):
+**Implementation** ([cloudseed.cpp](cloudseed.cpp)):
 
 **Settings Structure** (lines 100-113):
 ```cpp
@@ -211,38 +196,13 @@ This custom allocator manages SDRAM for delay lines.
 **AllpassDiffuser, MultitapDiffuser**: Diffusion stages
 **ModulatedAllpass, ModulatedDelay**: Modulated processing
 
-## CloudyReverb Effect
-
-### Architecture
-
-Based on Mutable Instruments Rings/Clouds reverb algorithm using Griesinger topology.
-
-**Key Features**:
-- Lightweight processing
-- 4 AP diffusers + loop of 2x(2AP+1Delay)
-- Simple 5-knob control scheme
-- No preset system
-- Lower memory requirements
-
-### Control Mapping
-
-File: [petal/CloudyReverb/cloudyreverb.cpp](petal/CloudyReverb/cloudyreverb.cpp)
-
-
-### Core Class
-
-**FxEngine** from eurorack (Mutable Instruments):
-- Lives in `eurorack/rings/dsp/fx/reverb.h`
-- Methods: `set_amount()`, `set_input_gain()`, `set_time()`, `set_diffusion()`, `set_lp()`
-- High-quality, battle-tested algorithm
-
 ## Build System
 
 ### Building Libraries
 
 ```bash
 # Build all libraries (libdaisy, DaisySP, libcloudseed)
-./rebuild_libs.sh
+make libs
 
 # Or build individually:
 cd CloudSeed && make
@@ -254,17 +214,12 @@ cd DaisySP && make
 
 ```bash
 # CloudSeed
-cd petal/CloudSeed
-make
-
-# CloudyReverb
-cd petal/CloudyReverb
 make
 ```
 
 ### Build Outputs
 
-Located in `petal/{CloudSeed,CloudyReverb}/build/`:
+Located in `build/`:
 - **{target}.bin** - Binary for DFU flashing via USB
 - **{target}.elf** - ELF executable with debug symbols
 - **{target}.hex** - Intel HEX format
@@ -289,7 +244,7 @@ make program-dfu
 
 ### 1. Changing Control Mappings
 
-**File**: [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp) or [petal/CloudyReverb/cloudyreverb.cpp](petal/CloudyReverb/cloudyreverb.cpp)
+**File**: [cloudseed.cpp](cloudseed.cpp)
 
 **Example**: Swap KNOB_1 and KNOB_2 in CloudSeed
 
@@ -332,7 +287,7 @@ lateFeedback.Init(hw.knob[KNOB_4], 0.0f, 1.0f, Parameter::LINEAR);
 
 ### 3. Adding New Presets
 
-**File**: [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp)
+**File**: [cloudseed.cpp](cloudseed.cpp)
 
 The preset system uses an array-based configuration (lines 55-96). To add a new preset:
 
@@ -373,22 +328,23 @@ static const int TotalLineCount = 4;
 
 ### 5. Modifying Switch Behavior
 
-**File**: [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp) (lines 179-204)
+**File**: [cloudseed.cpp](cloudseed.cpp) (lines 179-204)
 
-Current logic: Switches add delay lines (1 + number of switches on)
+Current logic: Switches 1-3 add delay lines (2 + number of switches on)
 
 ```cpp
 // Example: Make switches select exact count instead of additive
-int lineCount = 1; // Default
-if (hw.switches[SWITCH_4].Read()) lineCount = 5;
-else if (hw.switches[SWITCH_3].Read()) lineCount = 4;
-else if (hw.switches[SWITCH_2].Read()) lineCount = 3;
-else if (hw.switches[SWITCH_1].Read()) lineCount = 2;
+int lineCount = 2; // Default
+if (hw.switches[SWITCH_3].Read()) lineCount = 5;
+else if (hw.switches[SWITCH_2].Read()) lineCount = 4;
+else if (hw.switches[SWITCH_1].Read()) lineCount = 3;
 ```
+
+Switch 4 controls a "Bloom" effect which reverses the the gain decay on multi-tap delays
 
 ### 6. Adjusting Audio Buffer Size
 
-**File**: [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp) (line 234)
+**File**: [cloudseed.cpp](cloudseed.cpp) (line 234)
 
 ```cpp
 // Current: 48 samples
@@ -414,7 +370,7 @@ float cv_value = hw.knob[KNOB_1].Process();
 
 **Current Implementation**: LED2 uses a state machine to blink the preset number continuously (runs in main loop).
 
-The system is defined in [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp) (lines 148-229):
+The system is defined in [cloudseed.cpp](cloudseed.cpp) (lines 148-229):
 
 **Key Components**:
 - `BlinkPattern` struct: Defines blink timing parameters
@@ -438,8 +394,7 @@ The system is defined in [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudse
 ### Key Files for Modification
 
 **Most Common**:
-- [petal/CloudSeed/cloudseed.cpp](petal/CloudSeed/cloudseed.cpp) - CloudSeed control mapping and logic
-- [petal/CloudyReverb/cloudyreverb.cpp](petal/CloudyReverb/cloudyreverb.cpp) - CloudyReverb control mapping
+- [cloudseed.cpp](cloudseed.cpp) - CloudSeed control mapping and logic
 
 **Advanced**:
 - [CloudSeed/ReverbController.h](CloudSeed/ReverbController.h) - Presets and high-level reverb control
@@ -545,19 +500,12 @@ hw.led2.Update();
   flush-to-zero) and `std::map` parameter-lookup fixes documented in
   [PERFORMANCE.md](PERFORMANCE.md), so real headroom is now better than shown here
 
-**CloudyReverb**: Lightweight
-- Optimized Mutable Instruments algorithm
-- Runs at ~30-40% CPU (estimated)
 
 ### Memory Usage
 
 **CloudSeed**:
 - 48MB SDRAM for delay buffers
 - ~100KB SRAM for processing
-
-**CloudyReverb**:
-- Minimal SDRAM usage
-- ~50KB SRAM for processing
 
 ### Optimization Tips
 
@@ -622,14 +570,15 @@ Recent commits show lowpass filter control addition.
 
 ### Build & Flash
 ```bash
-./rebuild_libs.sh          # Build libraries
-cd petal/CloudSeed && make # Build CloudSeed
-make program-dfu           # Flash to Daisy
+make clean        # Clean previous build
+make libs          # Build libraries
+make               # Build CloudSeed
+make program-dfu   # Flash to Daisy
 ```
 
 ### File Locations
-- Control mapping: `petal/CloudSeed/cloudseed.cpp`
-- Preset array configuration: `petal/CloudSeed/cloudseed.cpp` (lines 55-96)
+- Control mapping: `cloudseed.cpp`
+- Preset array configuration: `cloudseed.cpp` (lines 55-96)
 - Preset initialization functions: `CloudSeed/ReverbController.h`
 - Parameters: `CloudSeed/Parameter.h`
 - Hardware config: `Terrarium/terrarium.h`
