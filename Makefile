@@ -8,9 +8,9 @@ export APP_TYPE = BOOT_SRAM
 # Sources
 CPP_SOURCES = cloudseed.cpp
 # Library Locations
-LIBDAISY_DIR = ../../libdaisy
-DAISYSP_DIR = ../../DaisySP
-CLOUDSEED_DIR = ../../CloudSeed
+LIBDAISY_DIR = ./libdaisy
+DAISYSP_DIR = ./DaisySP
+CLOUDSEED_DIR = ./CloudSeed
 
 OPT = -O3
 
@@ -18,14 +18,18 @@ OPT = -O3
 SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
 include $(SYSTEM_FILES_DIR)/Makefile
 
-
 C_INCLUDES += \
--I../../CloudSeed \
+-I./CloudSeed \
 
 LIBS += -lcloudseed
-LIBDIR += -L../../CloudSeed/build
+LIBDIR += -L./CloudSeed/build
 
 # Include terrarium.h
-C_INCLUDES += -I../../Terrarium
+C_INCLUDES += -I./Terrarium
 
 CPPFLAGS += -ffast-math
+
+libs:
+	$(MAKE) -C CLoudSeed clean all
+	$(MAKE) -C DaisySP clean all
+	$(MAKE) -C libdaisy clean all
