@@ -30,6 +30,6 @@ C_INCLUDES += -I./Terrarium
 CPPFLAGS += -ffast-math
 
 libs:
-	$(MAKE) -C CLoudSeed clean all
+	$(MAKE) -C CloudSeed clean all
 	$(MAKE) -C DaisySP clean all
 	$(MAKE) -C libdaisy clean all
