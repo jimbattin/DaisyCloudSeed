@@ -95,8 +95,10 @@ KNOB_4: Late diffusion feedback -> Parameter::LateDiffusionFeedback (0.0-1.0)
 KNOB_5: Early reverb dampening  -> Parameter::TapDecay              (0.0-1.0)
 KNOB_6: Late reverb decay       -> Parameter::LineDecay             (0.0-1.0)
 
-SWITCH_1-3: Delay line enable (additive: 2 + switches on, clamped to the preset's max_delay_lines)
-SWITCH_4:   Bloom -> Parameter::isReverse, reverses multitap gain order
+SWITCH_1: Delay line count (off = 2 lines, on = the preset's max_delay_lines)
+SWITCH_2: Unused (not referenced)
+SWITCH_3: Reverse delay on/off (mixes a reversed copy of the reverb output; see CloudSeed/ReverseDelay.h)
+SWITCH_4: Bloom -> Parameter::isReverse, reverses multitap gain order
 FOOTSWITCH_1: Bypass toggle (persisted to flash)
 FOOTSWITCH_2: Preset cycle (10 presets)
 ```
@@ -506,15 +508,20 @@ The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:53-67`;
    `triggerBypassSave`; FOOTSWITCH_2 sets `triggerPresetChange` (`:407-416`)
 3. `Process()` all six knob parameters, then write each to the reverb only when
    `hasChanged()` reports a difference larger than `FLOAT_EPSILON` (`:423-460`)
-4. Recompute the delay line count from switches 1-3 and clamp it to the current preset's
-   `max_delay_lines` before writing `Parameter::LineCount` (`:462-481`)
-5. Apply Bloom → `Parameter::isReverse` when switch 4 changes (`:483-487`)
+4. Select the delay line count from SWITCH_1 (off = 2, on = the preset's `max_delay_lines`)
+   before writing `Parameter::LineCount`, then sample SWITCH_3 into `state.reverseDelayOn`
+   (`:466-478`)
+5. Apply Bloom → `Parameter::isReverse` when SWITCH_4 changes (`:480-484`)
 6. Copy the left input channel into the static input buffer (`:496-498`)
 7. Process audio: `reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE)` (`:504`)
 8. Apply makeup gain and write the output (`:506-524`). The dry/wet mix itself happens inside
    the reverb via `DryOut`/`EarlyOut`/`MainOut`; the callback only scales the result by
    `makeupGain = OUTPUT_VOLUME_BOOST * (1 + sinf(wetBalance * π/2) * MAKEUP_GAIN_STRENGTH)`,
    where `wetBalance = (earlyOut + mainOut) / (dryOut + earlyOut + mainOut + FLOAT_EPSILON)`
+9. Run the reverse-delay stage on `audioOutputBuffer` and mix its reversed output into the
+   active (non-bypass) signal, ramped in/out by a smoothed `state.reverseMix` toward
+   `state.reverseDelayOn` so SWITCH_3 toggles click-free (`cloudseed.cpp` output loop;
+   engine in `CloudSeed/ReverseDelay.h`)
 
 When `state.bypass` is set, output is a straight `out[0][i] = in[0][i]` copy — but the reverb is
 still processed, deliberately, to suppress an audible 1 kHz whine (`:502-503`). When

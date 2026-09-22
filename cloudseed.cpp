@@ -15,6 +15,7 @@
 #include "CloudSeed/FastSin.h"
 #include "CloudSeed/AudioLib/ValueTables.h"
 #include "CloudSeed/AudioLib/MathDefs.h"
+#include "CloudSeed/ReverseDelay.h"
 
 using namespace daisy;
 using namespace daisysp;
@@ -24,8 +25,14 @@ using namespace terrarium;  // This is important for mapping the correct control
 constexpr size_t AUDIO_BUFFER_SIZE = 48;
 constexpr float OUTPUT_VOLUME_BOOST = 1.2f;
 constexpr float MAKEUP_GAIN_STRENGTH = 0.8f;  // Max additional gain when fully wet (0.0-1.0)
-constexpr int NUM_SWITCHES = 3;
 constexpr float FLOAT_EPSILON = 1e-6f;
+
+// Reverse delay stage (records the reverb output and plays it back backwards)
+constexpr int   REVERSE_BUFFER_SIZE = 48000;   // 1s @ 48kHz record buffer (SDRAM)
+constexpr float REVERSE_GRAIN_MS    = 500.0f;  // reverse window length
+constexpr float REVERSE_LEVEL       = 0.7f;    // output scale of the reversed signal
+constexpr float REVERSE_MIX_SMOOTHING = 0.002f;// per-sample one-pole toward target 0/1
+
 
 // Volatile global variable used to prevent optimization
 volatile float dummy_trig_value = 0.0f;
@@ -38,13 +45,6 @@ volatile float dummy_trig_value = 0.0f;
 // Increment this when changing the settings struct so the software will know
 // to reset to defaults if this ever changes.
 #define SETTINGS_VERSION 2
-
-// Switch indices for delay line control
-static const int DELAY_LINE_SWITCHES[NUM_SWITCHES] = {
-    Terrarium::SWITCH_1,
-    Terrarium::SWITCH_2,
-    Terrarium::SWITCH_3
-};
 
 // Switch to control Bloom (reverse tap decay)
 static const int BLOOM_SWITCH = Terrarium::SWITCH_4;
@@ -188,6 +188,8 @@ struct PedalState {
     bool triggerPresetBlink;     // Set true when we should blink LED to show preset
     bool presetChangeInProgress; // Set true while preset is being changed (prevents audio processing)
     bool reverseTaps;
+    bool  reverseDelayOn;  // SWITCH_3 state, sampled each callback
+    float reverseMix;      // smoothed 0..1 crossfade for the reverse voice
     Led led1;
     Led led2;
 };
@@ -196,6 +198,7 @@ struct PedalState {
 DaisyPetal hw;
 PedalState state;
 CloudSeed::ReverbController* reverb = nullptr;
+CloudSeed::ReverseDelay reverseDelay;
 
 // Persistent Storage Declaration. Using type Settings and passed the device's qspi handle
 PersistentStorage<Settings> SavedSettings(hw.seed.qspi);
@@ -210,6 +213,7 @@ BlinkState led2BlinkState = {false, 0, false, 0, {0, 0, 0, 0}};
 // delay line memory to SDRAM (64MB available on Daisy)
 #define CUSTOM_POOL_SIZE (48*1024*1024)
 DSY_SDRAM_BSS char custom_pool[CUSTOM_POOL_SIZE];
+DSY_SDRAM_BSS float reverseDelayBuffer[REVERSE_BUFFER_SIZE];
 size_t pool_index = 0;
 int allocation_count = 0;
 void* custom_pool_allocate(size_t size) {
@@ -393,6 +397,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // Audio buffers
     static float audioInputBuffer[AUDIO_BUFFER_SIZE];
     static float audioOutputBuffer[AUDIO_BUFFER_SIZE];
+    static float reverseOutputBuffer[AUDIO_BUFFER_SIZE];
 
     hw.ProcessAnalogControls();
     hw.ProcessDigitalControls();
@@ -459,26 +464,19 @@ static void audioCallback(AudioHandle::InputBuffer  in,
         state.prevTapDecay = tapDecayValue;
     }
 
-    // Delay Line Switches
-    // The .Pressed() function below counts an 'ON' switch as pressed.
-    // Total number of switches on sets how many delay lines are activated (2 - 5)
-    float numDelayLines = 2.0f;
-    for (int i = 0; i < NUM_SWITCHES; i++) {
-        if (hw.switches[DELAY_LINE_SWITCHES[i]].Pressed()) {
-            numDelayLines += 1.0f;
-        }
-    }
-    // Do not exceed the preset's limit for delay lines
-    // Only needed for "Through the Looking Glass" at the moment
-    if (numDelayLines > PRESETS[state.currentPreset].max_delay_lines) {
-        numDelayLines = PRESETS[state.currentPreset].max_delay_lines;
-    }
+    // SWITCH_1: off = 2 delay lines, on = the preset's max
+    float numDelayLines = hw.switches[Terrarium::SWITCH_1].Pressed()
+        ? PRESETS[state.currentPreset].max_delay_lines
+        : 2.0f;
 
     if (hasChanged(state.prevNumDelayLines, numDelayLines)) {
         // TODO: Determine if ClearBuffers() is needed when changing delay line count
         reverb->SetParameter(::Parameter::LineCount, numDelayLines);
         state.prevNumDelayLines = numDelayLines;
     }
+
+    // SWITCH_3: reverse delay on/off
+    state.reverseDelayOn = hw.switches[Terrarium::SWITCH_3].Pressed();
 
     // Process Bloom/Reverse tap switch
     if (state.prevReverseTaps != reverseTaps) {
@@ -514,12 +512,18 @@ static void audioCallback(AudioHandle::InputBuffer  in,
         float compensation = sinf(wetBalance * M_PI_2);
         float makeupGain = OUTPUT_VOLUME_BOOST * (1.0f + compensation * MAKEUP_GAIN_STRENGTH);
 
+        reverseDelay.Process(audioOutputBuffer, reverseOutputBuffer, AUDIO_BUFFER_SIZE);
+
+        const float reverseTarget = state.reverseDelayOn ? 1.0f : 0.0f;
         for (size_t i = 0; i < size; i++) {
+            state.reverseMix += (reverseTarget - state.reverseMix) * REVERSE_MIX_SMOOTHING;
             if (state.bypass) {
                 out[0][i] = in[0][i];
             }
             else {
-                out[0][i] = audioOutputBuffer[i] * makeupGain;
+                float wet = audioOutputBuffer[i] * makeupGain;
+                float rev = reverseOutputBuffer[i] * makeupGain * REVERSE_LEVEL * state.reverseMix;
+                out[0][i] = wet + rev;
             }
         }
     } else { // Preset change in progress, bypass audio to avoid race condition
@@ -546,6 +550,11 @@ int main(void) {
     reverb = new CloudSeed::ReverbController(sampleRate);
     reverb->ClearBuffers();
 
+    // Initialize reverse delay stage (records the reverb output for backward playback)
+    reverseDelay.Init(reverseDelayBuffer, REVERSE_BUFFER_SIZE,
+                      (int)(sampleRate * REVERSE_GRAIN_MS / 1000.0f));
+    reverseDelay.ClearBuffers();
+
     // Initialize parameters
     state.dryOut.Init(hw.knob[Terrarium::KNOB_1], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
     state.earlyOut.Init(hw.knob[Terrarium::KNOB_2], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
@@ -571,6 +580,8 @@ int main(void) {
     state.triggerSettingsSave = false;
     state.triggerPresetBlink = false;
     state.presetChangeInProgress = false;
+    state.reverseDelayOn = false;
+    state.reverseMix = 0.0f;
 
     // Initialize LEDs
     state.led1.Init(hw.seed.GetPin(Terrarium::LED_1), false);
