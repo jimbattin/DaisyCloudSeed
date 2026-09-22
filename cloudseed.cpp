@@ -398,6 +398,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     static float audioInputBuffer[AUDIO_BUFFER_SIZE];
     static float audioOutputBuffer[AUDIO_BUFFER_SIZE];
     static float reverseOutputBuffer[AUDIO_BUFFER_SIZE];
+    static float reverbInputBuffer[AUDIO_BUFFER_SIZE];
 
     hw.ProcessAnalogControls();
     hw.ProcessDigitalControls();
@@ -478,6 +479,9 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // SWITCH_3: reverse delay on/off
     state.reverseDelayOn = hw.switches[Terrarium::SWITCH_3].Pressed();
 
+    // SWITCH_2: reverse destination (off = into reverb wet path; on = direct output mix)
+    const bool reverseIntoReverb = !hw.switches[Terrarium::SWITCH_2].Pressed();
+
     // Process Bloom/Reverse tap switch
     if (state.prevReverseTaps != reverseTaps) {
         reverb->SetParameter(::Parameter::isReverse, reverseTaps ? 1.0f : 0.0f);
@@ -499,31 +503,56 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // IMPORTANT: Skip reverb processing if preset change is in progress to avoid race condition
     // We want to compute our reverb output even when bypassed to minimize 1khz whine
     if (!state.presetChangeInProgress) {
-        reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
+        const float reverseTarget = state.reverseDelayOn ? 1.0f : 0.0f;
 
-        // Calculate dynamic makeup gain using equal-power crossfade compensation
-        // This maintains perceived loudness as dry/wet balance changes
+        // Dynamic makeup gain (equal-power dry/wet compensation) — unchanged; depends
+        // only on the knob values, so compute it once before the output stage.
         float totalSignal = dryOutValue + earlyOutValue + mainOutValue + FLOAT_EPSILON;
         float wetBalance = (earlyOutValue + mainOutValue) / totalSignal;
-
-        // Equal-power compensation curve
-        // wetBalance=0 (all dry): sin(0)=0 → no extra gain
-        // wetBalance=1 (all wet): sin(π/2)=1 → maximum extra gain
         float compensation = sinf(wetBalance * M_PI_2);
         float makeupGain = OUTPUT_VOLUME_BOOST * (1.0f + compensation * MAKEUP_GAIN_STRENGTH);
 
-        reverseDelay.Process(audioOutputBuffer, reverseOutputBuffer, AUDIO_BUFFER_SIZE);
-
-        const float reverseTarget = state.reverseDelayOn ? 1.0f : 0.0f;
-        for (size_t i = 0; i < size; i++) {
-            state.reverseMix += (reverseTarget - state.reverseMix) * REVERSE_MIX_SMOOTHING;
-            if (state.bypass) {
-                out[0][i] = in[0][i];
+        if (reverseIntoReverb) {
+            // SWITCH_2 off: reverse the dry guitar and inject it into the reverb input.
+            // The reverb re-emits dryOut*(dry+injectedReverse); we subtract
+            // dryOut*injectedReverse at the output so the dry pass-through stays the
+            // clean, non-reversed guitar and the reverse is heard only through the wet
+            // tail. With early/late at zero the reverb adds nothing, so no reverse plays.
+            reverseDelay.Process(audioInputBuffer, reverseOutputBuffer, AUDIO_BUFFER_SIZE);
+            for (size_t i = 0; i < AUDIO_BUFFER_SIZE; i++) {
+                state.reverseMix += (reverseTarget - state.reverseMix) * REVERSE_MIX_SMOOTHING;
+                float injectedReverse = reverseOutputBuffer[i] * REVERSE_LEVEL * state.reverseMix;
+                reverseOutputBuffer[i] = injectedReverse; // retained for dry-pass-through cancellation
+                reverbInputBuffer[i]   = audioInputBuffer[i] + injectedReverse;
             }
-            else {
-                float wet = audioOutputBuffer[i] * makeupGain;
-                float rev = reverseOutputBuffer[i] * makeupGain * REVERSE_LEVEL * state.reverseMix;
-                out[0][i] = wet + rev;
+            reverb->Process(reverbInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
+            const float scaledDryOut = reverb->GetScaledParameter(::Parameter::DryOut);
+
+            for (size_t i = 0; i < size; i++) {
+                if (state.bypass) {
+                    out[0][i] = in[0][i];
+                }
+                else {
+                    out[0][i] = (audioOutputBuffer[i] - scaledDryOut * reverseOutputBuffer[i]) * makeupGain;
+                }
+            }
+        }
+        else {
+            // SWITCH_2 on: today's behavior — reverse records the reverb output and its
+            // reversed copy is mixed straight into the output (reverse audible on its own).
+            reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
+            reverseDelay.Process(audioOutputBuffer, reverseOutputBuffer, AUDIO_BUFFER_SIZE);
+
+            for (size_t i = 0; i < size; i++) {
+                state.reverseMix += (reverseTarget - state.reverseMix) * REVERSE_MIX_SMOOTHING;
+                if (state.bypass) {
+                    out[0][i] = in[0][i];
+                }
+                else {
+                    float wet = audioOutputBuffer[i] * makeupGain;
+                    float rev = reverseOutputBuffer[i] * makeupGain * REVERSE_LEVEL * state.reverseMix;
+                    out[0][i] = wet + rev;
+                }
             }
         }
     } else { // Preset change in progress, bypass audio to avoid race condition
@@ -550,7 +579,7 @@ int main(void) {
     reverb = new CloudSeed::ReverbController(sampleRate);
     reverb->ClearBuffers();
 
-    // Initialize reverse delay stage (records the reverb output for backward playback)
+    // Initialize reverse delay stage (records dry input or reverb output for backward playback)
     reverseDelay.Init(reverseDelayBuffer, REVERSE_BUFFER_SIZE,
                       (int)(sampleRate * REVERSE_GRAIN_MS / 1000.0f));
     reverseDelay.ClearBuffers();

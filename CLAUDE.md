@@ -86,8 +86,8 @@ CloudSeed is based on the open-source CloudSeed VST plugin by ValdemarOrn, modif
 File: [cloudseed.cpp](cloudseed.cpp)
 
 ```cpp
-// Knob Parameter::Init() calls: cloudseed.cpp:550-555
-// Parameter writes:            cloudseed.cpp:423-460
+// Knob Parameter::Init() calls: cloudseed.cpp:588-593
+// Parameter writes:            cloudseed.cpp:438-465
 KNOB_1: Dry level               -> Parameter::DryOut                (0.0-1.0)
 KNOB_2: Early reverb level      -> Parameter::EarlyOut              (0.0-1.0)
 KNOB_3: Late reverb level       -> Parameter::MainOut               (0.0-1.0)
@@ -96,8 +96,8 @@ KNOB_5: Early reverb dampening  -> Parameter::TapDecay              (0.0-1.0)
 KNOB_6: Late reverb decay       -> Parameter::LineDecay             (0.0-1.0)
 
 SWITCH_1: Delay line count (off = 2 lines, on = the preset's max_delay_lines)
-SWITCH_2: Unused (not referenced)
-SWITCH_3: Reverse delay on/off (mixes a reversed copy of the reverb output; see CloudSeed/ReverseDelay.h)
+SWITCH_2: Reverse routing (off = reverse into reverb wet path, on = direct output mix; only active with SWITCH_3 on)
+SWITCH_3: Reverse delay on/off (enables the reverse voice; SWITCH_2 selects its destination; see CloudSeed/ReverseDelay.h)
 SWITCH_4: Bloom -> Parameter::isReverse, reverses multitap gain order
 FOOTSWITCH_1: Bypass toggle (persisted to flash)
 FOOTSWITCH_2: Preset cycle (10 presets)
@@ -317,7 +317,7 @@ build cannot be flashed with `make program` (openocd) - libdaisy errors out on t
 **Example**: Swap KNOB_1 and KNOB_2 in CloudSeed
 
 ```cpp
-// Knob Parameter::Init() calls: cloudseed.cpp:550-555
+// Knob Parameter::Init() calls: cloudseed.cpp:588-593
 state.dryOut.Init(hw.knob[Terrarium::KNOB_1], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
 state.earlyOut.Init(hw.knob[Terrarium::KNOB_2], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
 
@@ -336,7 +336,7 @@ Parameters are members of `PedalState` (`cloudseed.cpp:163-171`), not globals, a
 ::daisy::Parameter lpFilter;
 float prevLpFilter;
 
-// 2. Initialize it next to the other knobs in main() (cloudseed.cpp:550-555):
+// 2. Initialize it next to the other knobs in main() (cloudseed.cpp:588-593):
 state.lpFilter.Init(hw.knob[Terrarium::KNOB_6], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
 
 // 3. Use it in audioCallback(), following the hasChanged() guard pattern used by every
@@ -357,10 +357,10 @@ parameters are `LowPass`/`HighPass` (cutoff values scaled into `SetCutoffHz`,
 ### 2. Modifying Parameter Ranges
 
 CloudSeed uses `::daisy::Parameter::Init()` with min/max values. Every knob currently uses the
-full `0.0f-1.0f` range (`cloudseed.cpp:550-555`):
+full `0.0f-1.0f` range (`cloudseed.cpp:588-593`):
 
 ```cpp
-// Current KNOB_4 (drives Parameter::LateDiffusionFeedback), cloudseed.cpp:553:
+// Current KNOB_4 (drives Parameter::LateDiffusionFeedback), cloudseed.cpp:591:
 state.diffusion.Init(hw.knob[Terrarium::KNOB_4], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
 
 // To restrict it to the upper half of the range:
@@ -411,9 +411,9 @@ static const int TotalLineCount = 4;
 
 ### 5. Modifying Switch Behavior
 
-**File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:462-487`)
+**File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:468-489`)
 
-Current logic: Switches 1-3 add delay lines (2 + number of switches on)
+Current logic: SWITCH_1 selects the delay-line count (off = 2, on = the preset's `max_delay_lines`); SWITCH_2 selects reverse routing (off = into the reverb, on = direct mix); SWITCH_3 toggles the reverse voice; SWITCH_4 is Bloom.
 
 ```cpp
 // Example: Make switches select exact count instead of additive
@@ -423,8 +423,8 @@ else if (hw.switches[Terrarium::SWITCH_2].Pressed()) lineCount = 4;
 else if (hw.switches[Terrarium::SWITCH_1].Pressed()) lineCount = 3;
 ```
 
-The code uses `.Pressed()` — an 'ON' toggle counts as pressed (`cloudseed.cpp:467`) — not
-`.Read()`. Any replacement must still apply the per-preset clamp at `cloudseed.cpp:473-475`,
+The code uses `.Pressed()` — an 'ON' toggle counts as pressed (`cloudseed.cpp:469`) — not
+`.Read()`. Any replacement must still apply the per-preset max at `cloudseed.cpp:468-471`,
 or CPU-intensive presets will crackle.
 
 Switch 4 controls a "Bloom" effect which reverses the gain decay on multi-tap delays
@@ -502,42 +502,53 @@ The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:53-67`;
 
 ### Understanding Audio Flow
 
-**CloudSeed Audio Callback** (`audioCallback()` at `cloudseed.cpp:389-530` - runs at audio rate, ~48kHz):
-1. Process analog/digital controls and update both LEDs (`:397-400`)
+**CloudSeed Audio Callback** (`audioCallback()` at `cloudseed.cpp:393-563` - runs at audio rate, ~48kHz):
+1. Process analog/digital controls and update both LEDs (`:403-406`)
 2. Footswitch edges: FOOTSWITCH_1 flips `state.bypass`, updates LED1, and sets
-   `triggerBypassSave`; FOOTSWITCH_2 sets `triggerPresetChange` (`:407-416`)
+   `triggerBypassSave`; FOOTSWITCH_2 sets `triggerPresetChange` (`:413-421`)
 3. `Process()` all six knob parameters, then write each to the reverb only when
-   `hasChanged()` reports a difference larger than `FLOAT_EPSILON` (`:423-460`)
+   `hasChanged()` reports a difference larger than `FLOAT_EPSILON` (`:429-465`)
 4. Select the delay line count from SWITCH_1 (off = 2, on = the preset's `max_delay_lines`)
    before writing `Parameter::LineCount`, then sample SWITCH_3 into `state.reverseDelayOn`
-   (`:466-478`)
-5. Apply Bloom → `Parameter::isReverse` when SWITCH_4 changes (`:480-484`)
-6. Copy the left input channel into the static input buffer (`:496-498`)
-7. Process audio: `reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE)` (`:504`)
-8. Apply makeup gain and write the output (`:506-524`). The dry/wet mix itself happens inside
+   and SWITCH_2 into `reverseIntoReverb` (off → reverse into the reverb, on → direct mix)
+   (`:468-483`)
+5. Apply Bloom → `Parameter::isReverse` when SWITCH_4 changes (`:485-489`)
+6. Copy the left input channel into the static input buffer (`:497-500`)
+7. Process audio through the SWITCH_2 branch (`:515-557`):
+   - Into-reverb (SWITCH_2 off): reverse the dry input, add `injectedReverse` to the reverb
+     input, then `reverb->Process(reverbInputBuffer, …)` and capture
+     `scaledDryOut = reverb->GetScaledParameter(::Parameter::DryOut)` (`:521-529`)
+   - Direct-mix (SWITCH_2 on): `reverb->Process(audioInputBuffer, …)`, then record the reverb
+     output into `reverseDelay` for backward playback (`:543-544`)
+8. Compute the equal-power `makeupGain` once, before the branch (`:508-513`); the output stage below scales by it. The dry/wet mix itself happens inside
    the reverb via `DryOut`/`EarlyOut`/`MainOut`; the callback only scales the result by
    `makeupGain = OUTPUT_VOLUME_BOOST * (1 + sinf(wetBalance * π/2) * MAKEUP_GAIN_STRENGTH)`,
    where `wetBalance = (earlyOut + mainOut) / (dryOut + earlyOut + mainOut + FLOAT_EPSILON)`
-9. Run the reverse-delay stage on `audioOutputBuffer` and mix its reversed output into the
-   active (non-bypass) signal, ramped in/out by a smoothed `state.reverseMix` toward
-   `state.reverseDelayOn` so SWITCH_3 toggles click-free (`cloudseed.cpp` output loop;
-   engine in `CloudSeed/ReverseDelay.h`)
+9. Write the output (scaled by `makeupGain`) for the active branch:
+   - Into-reverb: `out = (audioOutputBuffer − scaledDryOut * injectedReverse) * makeupGain`;
+     subtracting `scaledDryOut * injectedReverse` cancels the reverb's dry pass-through of the
+     injected reverse, so the forward dry stays clean and the reverse is heard only through the
+     wet tail (`:529-538`)
+   - Direct-mix: `out = (wet + reversed reverb output) * makeupGain`, the reverse audible on its
+     own (`:546-556`)
+   Both ramp the reverse via a smoothed `state.reverseMix` toward `state.reverseDelayOn`, so
+   SWITCH_3 toggles click-free (engine in `CloudSeed/ReverseDelay.h`).
 
 When `state.bypass` is set, output is a straight `out[0][i] = in[0][i]` copy — but the reverb is
-still processed, deliberately, to suppress an audible 1 kHz whine (`:502-503`). When
+still processed, deliberately, to suppress an audible 1 kHz whine (`:503-505`). When
 `state.presetChangeInProgress` is set, the reverb is skipped entirely and the input is passed
-through (`:525-529`).
+through (`:558-562`).
 
-**CloudSeed Main Loop** (`main()` while loop at `cloudseed.cpp:602-643` - free-running, no sleep):
+**CloudSeed Main Loop** (`main()` while loop at `cloudseed.cpp:642-683` - free-running, no sleep):
 1. **Handle preset changes**: set `presetChangeInProgress`, then `cyclePreset()`,
    `saveSettings()`, `startBlinkSequence(getPresetBlinkPattern(...))`, `System::Delay(10)`,
-   then clear the flag to re-enable audio processing (`:604-621`)
-2. **Handle bypass persistence**: `triggerBypassSave` → `saveSettings()` (`:625-628`)
-3. **Handle flash writes**: `triggerSettingsSave` → `SavedSettings.Save()` (`:631-634`)
-4. **Update LED2 blink state**: `updateBlinkState()` (`:637`)
+   then clear the flag to re-enable audio processing (`:644-661`)
+2. **Handle bypass persistence**: `triggerBypassSave` → `saveSettings()` (`:665-668`)
+3. **Handle flash writes**: `triggerSettingsSave` → `SavedSettings.Save()` (`:671-674`)
+4. **Update LED2 blink state**: `updateBlinkState()` (`:677`)
 5. `dummy_trig_value = sinf(0.12345f)` — deliberate busy work written to a `volatile` global
    that keeps the STM32 out of a low-power state and reduces an audible 1 kHz whine
-   (`:639-642`). There is no loop delay; the loop spins
+   (`:682`). There is no loop delay; the loop spins
 
 **Performance Architecture**:
 - **Audio callback**: Time-critical, optimized for low latency
@@ -676,10 +687,10 @@ Key changes in this fork:
 11. **Modulo-based preset cycling** for cleaner wraparound logic
 12. **Through the Looking Glass Preset** enabled by adopting a `max_delay_lines` value for each preset
 13. **Equal-power makeup gain** on the wet path, so perceived loudness holds as the dry/wet
-    balance changes (`cloudseed.cpp:506-524`)
+    balance changes (`cloudseed.cpp:508-556`)
 14. **1 kHz whine mitigation**: the reverb is still processed while bypassed
-    (`cloudseed.cpp:502-503`) and the main loop performs a `volatile` `sinf()` write
-    (`cloudseed.cpp:639-642`) to keep the STM32 out of a low-power state
+    (`cloudseed.cpp:503-505`) and the main loop performs a `volatile` `sinf()` write
+    (`cloudseed.cpp:682`) to keep the STM32 out of a low-power state
 15. **FPU flush-to-zero enabled at boot** to eliminate denormal stalls (`cloudseed.cpp:537`)
 16. **`BOOT_SRAM` app type** (`Makefile:6`): the app is loaded into SRAM from QSPI flash by
     the Daisy bootloader, leaving room for all ten presets
@@ -706,7 +717,7 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 ```
 
 ### File Locations
-- Control mapping: `cloudseed.cpp:550-555` (knob `Init()`), `cloudseed.cpp:423-460` (parameter writes)
+- Control mapping: `cloudseed.cpp:588-593` (knob `Init()`), `cloudseed.cpp:438-465` (parameter writes)
 - Preset array configuration: `cloudseed.cpp:79-141` (`PRESETS[]`)
 - Preset initialization functions: `CloudSeed/ReverbController.h` (`initFactoryChorus` :53 through `initFactoryDarkPlate` :579)
 - Parameters: `CloudSeed/Parameter.h`
@@ -723,9 +734,9 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 - LED2: Continuous blink pattern indicates preset number
 
 ### Quick Modifications
-1. Control mapping → `cloudseed.cpp:550-555` (knob `Init()` calls)
-2. Parameter ranges → `Init()` calls at `cloudseed.cpp:550-555`
+1. Control mapping → `cloudseed.cpp:588-593` (knob `Init()` calls)
+2. Parameter ranges → `Init()` calls at `cloudseed.cpp:588-593`
 3. Add/modify presets → `cloudseed.cpp:79-141` (`PRESETS[]`)
 4. Blink patterns → `cloudseed.cpp:79-141` (`.blinkPattern` fields)
-5. Switch logic → `cloudseed.cpp:462-487` (delay line count, `max_delay_lines` clamp, Bloom)
+5. Switch logic → `cloudseed.cpp:468-489` (delay line count, `max_delay_lines` clamp, Bloom)
 6. LED2 blink behavior → `cloudseed.cpp:333-382` (`updateBlinkState`)
