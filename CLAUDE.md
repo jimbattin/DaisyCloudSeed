@@ -22,7 +22,13 @@ DaisyCloudSeed/
 │
 ├── build/                 # Application build artifacts (generated, not checked in)
 ├── Makefile               # App build (BOOT_SRAM; dependent libraries built with the `libs` target)
-├── cloudseed.cpp          # Main application code (the only app source file)
+├── cloudseed.cpp          # Main application code (hardware, controls, audio callback)
+├── preset_bank.h          # PresetBank/PresetData types + ParsePresetBank()
+├── preset_bank.cpp        # TOML -> PresetBank parser (host-portable, no libdaisy)
+├── presets.toml           # THE preset data - all 10 presets, parsed at boot
+├── presets_toml.s         # .incbin that embeds presets.toml into the firmware image
+├── third_party/tomlc99/   # Vendored TOML parser (MIT, commit in README.txt)
+├── tools/                 # gen_presets_toml.py, preset_check.cpp, presets_expected.txt
 ├── CLAUDE.md              # This file - agent-facing project documentation
 ├── README.md              # User-facing control table and build/flash instructions
 ├── PERFORMANCE.md         # Record of applied performance/correctness fixes (with file/line anchors)
@@ -73,7 +79,7 @@ CloudSeed is based on the open-source CloudSeed VST plugin by ValdemarOrn, modif
 
 **Key Features**:
 - Up to 5 delay lines (user-selectable via switches, capped per preset by `max_delay_lines`)
-- 10 factory presets (per-preset delay-line cap via `PresetConfig::max_delay_lines`)
+- 10 presets defined in [presets.toml](presets.toml), embedded in the image and parsed at boot
 - Early and late reverberation stages
 - Extensive modulation and diffusion
 - 48MB SDRAM buffer allocation
@@ -86,8 +92,8 @@ CloudSeed is based on the open-source CloudSeed VST plugin by ValdemarOrn, modif
 File: [cloudseed.cpp](cloudseed.cpp)
 
 ```cpp
-// Knob Parameter::Init() calls: cloudseed.cpp:588-593
-// Parameter writes:            cloudseed.cpp:438-465
+// Knob Parameter::Init() calls: cloudseed.cpp:587-592
+// Parameter writes:            cloudseed.cpp:421-448
 KNOB_1: Dry level               -> Parameter::DryOut                (0.0-1.0)
 KNOB_2: Early reverb level      -> Parameter::EarlyOut              (0.0-1.0)
 KNOB_3: Late reverb level       -> Parameter::MainOut               (0.0-1.0)
@@ -105,7 +111,10 @@ FOOTSWITCH_2: Preset cycle (10 presets)
 
 ### Presets
 
-Ten factory presets are configured in an array-based system in [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:79-141`):
+All preset data lives in [presets.toml](presets.toml) at the repo root. The file is embedded
+into the firmware image by `presets_toml.s` (`.incbin`, lands in `.rodata` → SRAM) and parsed
+once at boot into the static `gPresets` bank (`cloudseed.cpp:79`). There is no filesystem and
+no external storage: editing presets means editing the TOML and reflashing.
 
 1. Chorus (1 blink)
 2. Dull Echos (2 blinks)
@@ -119,18 +128,32 @@ Ten factory presets are configured in an array-based system in [cloudseed.cpp](c
 10. Dark Plate (10 Blinks)
 
 All presets allow 5 delay lines except "Through the Looking Glass"
-(`max_delay_lines = 4.0f`, `cloudseed.cpp:133`) - it is CPU-intensive and crackles above that.
+(`max_delay_lines = 4.0`) - it is CPU-intensive and crackles above that.
 
 **Preset System Architecture**:
-- Presets defined in `PRESETS[]` array with function pointers and LED blink patterns
-- Cycles using modulo operator: `(currentPreset + 1) % NUM_PRESETS`
-- Uses designated initializers for clarity
-- Current preset and bypass state persist in QSPI flash memory
-- `PresetConfig` carries a per-preset `max_delay_lines` cap applied in the audio callback
-  (`cloudseed.cpp:473-475`)
+- Each `[[preset]]` carries `name`, `blinks`, `led_on_ms`, `led_off_ms`, `led_pause_ms`,
+  `max_delay_lines`, and eight `[preset.params.*]` groups holding all 45 file-controlled
+  parameters (see the parameter reference in the TOML header)
+- `LineCount` and `isReverse` must NOT appear in the file: they are written at audio rate from
+  SWITCH_1 and SWITCH_4. The parser rejects them
+- Parsed by `ParsePresetBank()` ([preset_bank.cpp](preset_bank.cpp)) into `PresetBank`
+  (`count` + `PresetData[16]`); `PresetData::params[]` is indexed by `(int)Parameter`
+- Applied with `CloudSeed::ReverbController::LoadPreset()`
+  (`CloudSeed/ReverbController.h:47`), which copies every slot except `LineCount`/`isReverse`
+  and then re-applies all 47 through `SetParameter`
+- Cycles using modulo operator: `(currentPreset + 1) % gPresets.count` (`cloudseed.cpp:284`)
+- Preset index is persisted to QSPI flash, so **the order in presets.toml is frozen**;
+  reordering or deleting entries requires bumping `SETTINGS_VERSION` (`cloudseed.cpp:50`)
+- `max_delay_lines` is applied in the audio callback (`cloudseed.cpp:452-454`)
 - LED2 blinks continuously to indicate active preset (N blinks = preset N)
+- A parse failure is unrecoverable: `presetErrorLoop()` (`cloudseed.cpp:213`) blinks both LEDs
+  at 5 Hz forever and never starts audio. `make presets-check` prevents shipping such a file
 
-Preset definitions use initialization functions from [CloudSeed/ReverbController.h](CloudSeed/ReverbController.h) (`initFactoryChorus` at `CloudSeed/ReverbController.h:53` through `initFactoryDarkPlate` at `CloudSeed/ReverbController.h:579`)
+**Boot-time memory**: the parser allocates exclusively from a 512 KB bump arena carved from the
+head of `custom_pool` (`cloudseed.cpp:186-197`), used between `hw.Init()` and
+`new CloudSeed::ReverbController(...)`. Peak measured usage is 83,632 B on x86-64 (smaller on
+32-bit ARM); the arena is abandoned - not freed - so the SDRAM pool starts at offset 0 for the
+reverb. Permanent SDRAM cost of the TOML system: zero.
 
 ### Preset Persistence
 
@@ -138,9 +161,9 @@ The current preset and the bypass state are both automatically saved to and load
 
 **Implementation** ([cloudseed.cpp](cloudseed.cpp)):
 
-**Settings Structure** (`cloudseed.cpp:146-160`):
+**Settings Structure** (`cloudseed.cpp:82-96`):
 ```cpp
-#define SETTINGS_VERSION 2   // cloudseed.cpp:40
+#define SETTINGS_VERSION 2   // cloudseed.cpp:50
 
 struct Settings {
     int  version;        // SETTINGS_VERSION for compatibility checking
@@ -157,20 +180,20 @@ struct Settings {
 - Settings validated on load (invalid presets default to 0)
 
 **Save/Load Workflow**:
-1. **On startup**: `loadSettings()` (`cloudseed.cpp:257-284`) restores preset and bypass from
-   flash; called from `main()` at `:591`
-2. **On preset change**: `saveSettings()` (`cloudseed.cpp:286-295`) updates the local copy and
+1. **On startup**: `loadSettings()` (`cloudseed.cpp:243-270`) restores preset and bypass from
+   flash; called from `main()` at `:623`
+2. **On preset change**: `saveSettings()` (`cloudseed.cpp:272-281`) updates the local copy and
    sets `state.triggerSettingsSave`
-3. **On bypass toggle**: the audio callback sets `state.triggerBypassSave` (`:410`); the main
-   loop turns that into a `saveSettings()` call (`:625-628`)
+3. **On bypass toggle**: the audio callback sets `state.triggerBypassSave` (`:393`); the main
+   loop turns that into a `saveSettings()` call (`:657-660`)
 4. **In main loop**: the actual flash write (`SavedSettings.Save()`) happens outside the audio
-   callback (`:631-634`)
+   callback (`:663-666`)
 
 **Resilience Features**:
-- Invalid preset indices automatically default to preset 0 (Chorus) (`cloudseed.cpp:274-276`)
-- Version mismatch triggers `RestoreDefaults()` and a reload (`cloudseed.cpp:263-268`)
-- First boot / version mismatch defaults to preset 0 and `bypass = true` (`cloudseed.cpp:583-587`)
-- LED1 is re-synced to the restored bypass state after load (`cloudseed.cpp:595-596`)
+- Invalid preset indices automatically default to preset 0 (Chorus) (`cloudseed.cpp:257-260`)
+- Version mismatch triggers `RestoreDefaults()` and a reload (`cloudseed.cpp:249-254`)
+- First boot / version mismatch defaults to preset 0 and `bypass = true` (`cloudseed.cpp:615-619`)
+- LED1 is re-synced to the restored bypass state after load (`cloudseed.cpp:627-628`)
 - Non-blocking: flash writes happen in the main loop, not the audio callback
 - Settings survive power cycles, firmware updates, and manual resets
 
@@ -199,7 +222,7 @@ struct Settings {
 CloudSeed requires massive delay buffers:
 
 ```cpp
-// cloudseed.cpp:211-226
+// cloudseed.cpp:150-166
 #define CUSTOM_POOL_SIZE (48*1024*1024)  // 48MB
 DSY_SDRAM_BSS char custom_pool[CUSTOM_POOL_SIZE];
 size_t pool_index = 0;
@@ -219,21 +242,32 @@ void* custom_pool_allocate(size_t size) {
 This custom allocator manages SDRAM for delay lines.
 
 Bump allocator, no free. Usage introspection: `get_pool_usage()` / `get_pool_remaining()`
-(`cloudseed.cpp:229-235`). Callers placement-new into it (e.g.
+(`cloudseed.cpp:169-175`). Callers placement-new into it (e.g.
 `CloudSeed/ModulatedDelay.h:41-42`), so destructors of pool-backed objects must not call
 `delete` - see [PERFORMANCE.md](PERFORMANCE.md) §6.
+
+The first 512 KB of this pool doubles as the boot-time TOML parse arena
+(`toml_arena_alloc`, `cloudseed.cpp:189-195`). That arena is abandoned before
+`new CloudSeed::ReverbController(...)` runs, so `pool_index` is still 0 when the reverb starts
+allocating - the two uses never overlap in time.
 
 ### Core Classes
 
 **ReverbController** ([CloudSeed/ReverbController.h](CloudSeed/ReverbController.h)):
 - Main reverb controller
-- Preset management
+- Preset application: `LoadPreset(const float* values)` (`:47`) copies a parsed
+  `PresetData::params[]` into `parameters[]`, skipping `LineCount`/`isReverse` (written at audio
+  rate by SWITCH_1/SWITCH_4), then re-applies all 47 slots through `SetParameter`. The
+  constructor no longer loads any preset - `main()` parses presets.toml and calls `LoadPreset()`
+  before audio starts
 - Single channel: `channelR` and all right-channel buffers are commented out
-  (`CloudSeed/ReverbController.h:27`, `:37`, `:647`, `:748`, `:756`, `:773-775`)
+  (`CloudSeed/ReverbController.h:27`, `:37`, `:73`, `:174`, `:182`, `:199-201`)
 - Fixed internal block size `static const int bufferSize = 48` (`CloudSeed/ReverbController.h:23`),
   backing fixed-size member arrays (`:28-30`)
-- Public API: `SetParameter(Parameter, float)` `:742`, `ClearBuffers()` `:753`,
-  `Process(float* input, float* output, int bufferSize)` `:759`
+- Public API: `LoadPreset(const float*)` `:47`, `SetParameter(Parameter, float)` `:168`,
+  `ClearBuffers()` `:179`, `Process(float* input, float* output, int bufferSize)` `:185`
+- Parameter scaling (the normalized 0.0-1.0 → real-unit mapping documented in presets.toml):
+  `GetScaledParameter` `:86`
 
 **ReverbChannel** ([CloudSeed/ReverbChannel.h](CloudSeed/ReverbChannel.h)):
 - `static const int TotalLineCount = 5;` for the mono implementation (`CloudSeed/ReverbChannel.h:39`)
@@ -255,7 +289,7 @@ Bump allocator, no free. Usage introspection: `get_pool_usage()` / `get_pool_rem
 
 ```bash
 # Rebuild all libraries (libcloudseed, DaisySP, libdaisy).
-# Makefile:32-35 runs `clean all` in each, so this is a full rebuild of all three.
+# Makefile:56-59 runs `clean all` in each, so this is a full rebuild of all three.
 make libs
 
 # Or build individually:
@@ -270,6 +304,24 @@ cd DaisySP && make
 # CloudSeed
 make
 ```
+
+### Checking presets
+
+```bash
+# Parses presets.toml with the same parser the firmware uses and diffs the result
+# against tools/presets_expected.txt (the golden dump of the original hard-coded presets).
+make presets-check
+```
+
+This builds `build/preset_check` from `tools/preset_check.cpp`, `preset_bank.cpp`, and the
+vendored tomlc99 (compiled as C), runs it on `presets.toml`, and fails the build on any schema
+error or value drift. Run it after editing presets.toml and before flashing - a TOML the parser
+rejects bricks the boot into `presetErrorLoop()`.
+
+`tools/gen_presets_toml.py` regenerated `presets.toml` and `tools/presets_expected.txt` from the
+old hard-coded `initFactory*` methods. Those methods are gone, so the script now needs
+`--source <header>` pointing at a copy from git history, e.g.
+`git show <rev>:CloudSeed/ReverbController.h > /tmp/orig.h`.
 
 ### Build Outputs
 
@@ -303,7 +355,7 @@ build cannot be flashed with `make program` (openocd) - libdaisy errors out on t
 **Optimization**: `-O3` (`Makefile:15`, `CloudSeed/Makefile:23`)
 **FPU**: Hard float (`-mfpu=fpv5-d16 -mfloat-abi=hard`, `CloudSeed/Makefile:81-84`)
 **Language**: C++14 (`-std=gnu++14`, `CloudSeed/Makefile:75`)
-**Float flags**: `-ffast-math` on both the app (`Makefile:30`) and the library
+**Float flags**: `-ffast-math` on both the app (`Makefile:34`) and the library
 (`CloudSeed/Makefile:118`); the library additionally uses `-fno-exceptions`,
 `-finline-functions`, and `-fno-aggressive-loop-optimizations` (`CloudSeed/Makefile:116-120`)
 **App type**: `BOOT_SRAM` (`Makefile:6`)
@@ -317,7 +369,7 @@ build cannot be flashed with `make program` (openocd) - libdaisy errors out on t
 **Example**: Swap KNOB_1 and KNOB_2 in CloudSeed
 
 ```cpp
-// Knob Parameter::Init() calls: cloudseed.cpp:588-593
+// Knob Parameter::Init() calls: cloudseed.cpp:587-592
 state.dryOut.Init(hw.knob[Terrarium::KNOB_1], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
 state.earlyOut.Init(hw.knob[Terrarium::KNOB_2], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
 
@@ -326,21 +378,21 @@ state.dryOut.Init(hw.knob[Terrarium::KNOB_2], 0.0f, 1.0f, ::daisy::Parameter::LI
 state.earlyOut.Init(hw.knob[Terrarium::KNOB_1], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
 ```
 
-Parameters are members of `PedalState` (`cloudseed.cpp:163-171`), not globals, and both the
+Parameters are members of `PedalState` (`cloudseed.cpp:99-107`), not globals, and both the
 `Terrarium::` and `::daisy::` qualifications are required as used in the file.
 
 **Example**: Add low-pass filter control to CloudSeed
 
 ```cpp
-// 1. Add the parameter and its change-detection field to PedalState (cloudseed.cpp:163-178):
+// 1. Add the parameter and its change-detection field to PedalState (cloudseed.cpp:99-114):
 ::daisy::Parameter lpFilter;
 float prevLpFilter;
 
-// 2. Initialize it next to the other knobs in main() (cloudseed.cpp:588-593):
+// 2. Initialize it next to the other knobs in main() (cloudseed.cpp:587-592):
 state.lpFilter.Init(hw.knob[Terrarium::KNOB_6], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
 
 // 3. Use it in audioCallback(), following the hasChanged() guard pattern used by every
-//    other parameter (cloudseed.cpp:432-460):
+//    other parameter (cloudseed.cpp:415-443):
 const float lpValue = state.lpFilter.Process();
 if (hasChanged(state.prevLpFilter, lpValue)) {
     reverb->SetParameter(::Parameter::LowPassEnabled, 1.0f);
@@ -349,7 +401,7 @@ if (hasChanged(state.prevLpFilter, lpValue)) {
 }
 ```
 
-`reverb` is a pointer (`cloudseed.cpp:198`), so parameter writes use `reverb->`. The filter
+`reverb` is a pointer (`cloudseed.cpp:136`), so parameter writes use `reverb->`. The filter
 parameters are `LowPass`/`HighPass` (cutoff values scaled into `SetCutoffHz`,
 `CloudSeed/ReverbChannel.h:163-168`) plus the `LowPassEnabled`/`HiPassEnabled` switches
 (`CloudSeed/Parameter.h:11-12`, `:75-76`).
@@ -357,43 +409,66 @@ parameters are `LowPass`/`HighPass` (cutoff values scaled into `SetCutoffHz`,
 ### 2. Modifying Parameter Ranges
 
 CloudSeed uses `::daisy::Parameter::Init()` with min/max values. Every knob currently uses the
-full `0.0f-1.0f` range (`cloudseed.cpp:588-593`):
+full `0.0f-1.0f` range (`cloudseed.cpp:587-592`):
 
 ```cpp
-// Current KNOB_4 (drives Parameter::LateDiffusionFeedback), cloudseed.cpp:591:
+// Current KNOB_4 (drives Parameter::LateDiffusionFeedback), cloudseed.cpp:590:
 state.diffusion.Init(hw.knob[Terrarium::KNOB_4], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
 
 // To restrict it to the upper half of the range:
 state.diffusion.Init(hw.knob[Terrarium::KNOB_4], 0.5f, 1.0f, ::daisy::Parameter::LINEAR);
 ```
 
-### 3. Adding New Presets
+### 3. Adding or Editing Presets
 
-**File**: [cloudseed.cpp](cloudseed.cpp)
+**File**: [presets.toml](presets.toml) - no C++ changes required.
 
-The preset system uses an array-based configuration (`cloudseed.cpp:79-141`). To add a new preset:
+Append a new `[[preset]]` table at the end of the file (appending keeps the existing indices,
+which are persisted to QSPI flash):
 
-1. Add a new entry to the `PRESETS[]` array using designated initializers:
+```toml
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Your New Preset"
+blinks = 11
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 5.0
 
-```cpp
-{
-    .initFunction = &CloudSeed::ReverbController::initFactoryYourNewPreset,
-    .blinkPattern = {.numBlinks = 11, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-    .name = "Your New Preset",
-    .max_delay_lines = 5.0f
-}
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.0
+PreDelay       = 0.07
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 0.0
+LowPass        = 0.29
+
+# ... the remaining seven groups, every key required
 ```
 
-2. Define the initialization function in [CloudSeed/ReverbController.h](CloudSeed/ReverbController.h)
+Rules the parser enforces (a violation stops boot and blinks both LEDs, so run
+`make presets-check` first):
+- All eight `[preset.params.*]` groups must be present, each containing exactly its own keys -
+  45 parameters total. Group membership is defined by `kGroups` in
+  [preset_bank.cpp](preset_bank.cpp) and mirrored by the reference comment at the top of
+  presets.toml
+- `LineCount` and `isReverse` must not appear (SWITCH_1 and SWITCH_4 own them)
+- `blinks` is 1..20; `max_delay_lines` is 1.0..5.0; the ms fields are 0..60000 and optional
+  (defaults 150/150/5000); at most `kMaxPresets` (16) presets
+- Values are normalized 0.0-1.0; the real-unit ranges are listed in the TOML header and
+  implemented by `ReverbController::GetScaledParameter`
 
-**No other code changes needed** - `NUM_PRESETS` is computed automatically from the array size, and the modulo cycling logic adapts automatically.
+Then rebuild and reflash: `make presets-check && make && make program-dfu`. `NUM_PRESETS` no
+longer exists - the count comes from `gPresets.count` and the modulo cycling adapts
+automatically.
 
-**Blink Pattern Customization**:
-Each preset can have a unique blink pattern. Modify the `.blinkPattern` fields:
-- `.numBlinks`: How many times to blink
-- `.onDurationMs`: LED on duration (milliseconds)
-- `.offDurationMs`: LED off duration between blinks (milliseconds)
-- `.pauseAfterMs`: Pause before repeating the sequence (milliseconds)
+**Reordering or deleting presets** invalidates saved settings: bump `SETTINGS_VERSION`
+(`cloudseed.cpp:50`) in the same change so stale flash contents are discarded.
+
+**Blink Pattern Customization**: per preset, via `blinks`, `led_on_ms`, `led_off_ms`, and
+`led_pause_ms`.
 
 ### 4. Changing Number of Delay Lines
 
@@ -411,7 +486,7 @@ static const int TotalLineCount = 4;
 
 ### 5. Modifying Switch Behavior
 
-**File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:468-489`)
+**File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:451-472`)
 
 Current logic: SWITCH_1 selects the delay-line count (off = 2, on = the preset's `max_delay_lines`); SWITCH_2 selects reverse routing (off = into the reverb, on = direct mix); SWITCH_3 toggles the reverse voice; SWITCH_4 is Bloom.
 
@@ -423,15 +498,15 @@ else if (hw.switches[Terrarium::SWITCH_2].Pressed()) lineCount = 4;
 else if (hw.switches[Terrarium::SWITCH_1].Pressed()) lineCount = 3;
 ```
 
-The code uses `.Pressed()` — an 'ON' toggle counts as pressed (`cloudseed.cpp:469`) — not
-`.Read()`. Any replacement must still apply the per-preset max at `cloudseed.cpp:468-471`,
+The code uses `.Pressed()` — an 'ON' toggle counts as pressed (`cloudseed.cpp:452`) — not
+`.Read()`. Any replacement must still apply the per-preset max at `cloudseed.cpp:451-454`,
 or CPU-intensive presets will crackle.
 
 Switch 4 controls a "Bloom" effect which reverses the gain decay on multi-tap delays
 
 ### 6. Adjusting Audio Buffer Size
 
-**File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:599-600`)
+**File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:631-632`)
 
 ```cpp
 // Current: 48 samples per block
@@ -442,7 +517,7 @@ hw.StartAudio(audioCallback);
 Three sizes are coupled and must change together:
 - `DaisyPetal::Init()` sets the hardware block size to 48 (`libdaisy/src/daisy_petal.cpp:90`);
   override it with `hw.SetAudioBlockSize(n)` before `StartAudio()`
-- `AUDIO_BUFFER_SIZE` (`cloudseed.cpp:24`) sizes the static in/out buffers the callback writes
+- `AUDIO_BUFFER_SIZE` (`cloudseed.cpp:28`) sizes the static in/out buffers the callback writes
 - `ReverbController::bufferSize` (`CloudSeed/ReverbController.h:23`) sizes the controller's
   fixed member arrays
 
@@ -463,8 +538,8 @@ float cv_value = hw.knob[Terrarium::KNOB_1].Process();
 
 **Current Implementation**: LED2 uses a state machine to blink the preset number continuously (runs in main loop).
 
-The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:53-67`;
-`getPresetBlinkPattern` :313-319; `startBlinkSequence` :322-330; `updateBlinkState` :333-382):
+The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:56-70`;
+`getPresetBlinkPattern` :299-306; `startBlinkSequence` :309-317; `updateBlinkState` :320-369):
 
 **Key Components**:
 - `BlinkPattern` struct: Defines blink timing parameters
@@ -489,9 +564,11 @@ The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:53-67`;
 
 **Most Common**:
 - [cloudseed.cpp](cloudseed.cpp) - CloudSeed control mapping and logic
+- [presets.toml](presets.toml) - all preset data (parsed at boot; run `make presets-check`)
 
 **Advanced**:
-- [CloudSeed/ReverbController.h](CloudSeed/ReverbController.h) - Presets and high-level reverb control
+- [preset_bank.cpp](preset_bank.cpp) - TOML schema, group membership, and validation errors
+- [CloudSeed/ReverbController.h](CloudSeed/ReverbController.h) - `LoadPreset`, parameter scaling
 - [CloudSeed/Parameter.h](CloudSeed/Parameter.h) - All available reverb parameters
 - [CloudSeed/ReverbChannel.h](CloudSeed/ReverbChannel.h) - Core reverb architecture
 
@@ -502,25 +579,25 @@ The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:53-67`;
 
 ### Understanding Audio Flow
 
-**CloudSeed Audio Callback** (`audioCallback()` at `cloudseed.cpp:393-563` - runs at audio rate, ~48kHz):
-1. Process analog/digital controls and update both LEDs (`:403-406`)
+**CloudSeed Audio Callback** (`audioCallback()` at `cloudseed.cpp:376-546` - runs at audio rate, ~48kHz):
+1. Process analog/digital controls and update both LEDs (`:386-389`)
 2. Footswitch edges: FOOTSWITCH_1 flips `state.bypass`, updates LED1, and sets
-   `triggerBypassSave`; FOOTSWITCH_2 sets `triggerPresetChange` (`:413-421`)
+   `triggerBypassSave`; FOOTSWITCH_2 sets `triggerPresetChange` (`:396-404`)
 3. `Process()` all six knob parameters, then write each to the reverb only when
-   `hasChanged()` reports a difference larger than `FLOAT_EPSILON` (`:429-465`)
-4. Select the delay line count from SWITCH_1 (off = 2, on = the preset's `max_delay_lines`)
-   before writing `Parameter::LineCount`, then sample SWITCH_3 into `state.reverseDelayOn`
-   and SWITCH_2 into `reverseIntoReverb` (off → reverse into the reverb, on → direct mix)
-   (`:468-483`)
-5. Apply Bloom → `Parameter::isReverse` when SWITCH_4 changes (`:485-489`)
-6. Copy the left input channel into the static input buffer (`:497-500`)
-7. Process audio through the SWITCH_2 branch (`:515-557`):
+   `hasChanged()` reports a difference larger than `FLOAT_EPSILON` (`:412-448`)
+4. Select the delay line count from SWITCH_1 (off = 2, on = the preset's `max_delay_lines`,
+   read from `gPresets.presets[state.currentPreset]`) before writing `Parameter::LineCount`,
+   then sample SWITCH_3 into `state.reverseDelayOn` and SWITCH_2 into `reverseIntoReverb`
+   (off → reverse into the reverb, on → direct mix) (`:451-466`)
+5. Apply Bloom → `Parameter::isReverse` when SWITCH_4 changes (`:468-472`)
+6. Copy the left input channel into the static input buffer (`:480-483`)
+7. Process audio through the SWITCH_2 branch (`:498-540`):
    - Into-reverb (SWITCH_2 off): reverse the dry input, add `injectedReverse` to the reverb
      input, then `reverb->Process(reverbInputBuffer, …)` and capture
-     `scaledDryOut = reverb->GetScaledParameter(::Parameter::DryOut)` (`:521-529`)
+     `scaledDryOut = reverb->GetScaledParameter(::Parameter::DryOut)` (`:504-512`)
    - Direct-mix (SWITCH_2 on): `reverb->Process(audioInputBuffer, …)`, then record the reverb
-     output into `reverseDelay` for backward playback (`:543-544`)
-8. Compute the equal-power `makeupGain` once, before the branch (`:508-513`); the output stage below scales by it. The dry/wet mix itself happens inside
+     output into `reverseDelay` for backward playback (`:526-527`)
+8. Compute the equal-power `makeupGain` once, before the branch (`:491-496`); the output stage below scales by it. The dry/wet mix itself happens inside
    the reverb via `DryOut`/`EarlyOut`/`MainOut`; the callback only scales the result by
    `makeupGain = OUTPUT_VOLUME_BOOST * (1 + sinf(wetBalance * π/2) * MAKEUP_GAIN_STRENGTH)`,
    where `wetBalance = (earlyOut + mainOut) / (dryOut + earlyOut + mainOut + FLOAT_EPSILON)`
@@ -528,27 +605,27 @@ The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:53-67`;
    - Into-reverb: `out = (audioOutputBuffer − scaledDryOut * injectedReverse) * makeupGain`;
      subtracting `scaledDryOut * injectedReverse` cancels the reverb's dry pass-through of the
      injected reverse, so the forward dry stays clean and the reverse is heard only through the
-     wet tail (`:529-538`)
+     wet tail (`:512-521`)
    - Direct-mix: `out = (wet + reversed reverb output) * makeupGain`, the reverse audible on its
-     own (`:546-556`)
+     own (`:529-539`)
    Both ramp the reverse via a smoothed `state.reverseMix` toward `state.reverseDelayOn`, so
    SWITCH_3 toggles click-free (engine in `CloudSeed/ReverseDelay.h`).
 
 When `state.bypass` is set, output is a straight `out[0][i] = in[0][i]` copy — but the reverb is
-still processed, deliberately, to suppress an audible 1 kHz whine (`:503-505`). When
+still processed, deliberately, to suppress an audible 1 kHz whine (`:486-488`). When
 `state.presetChangeInProgress` is set, the reverb is skipped entirely and the input is passed
-through (`:558-562`).
+through (`:541-545`).
 
-**CloudSeed Main Loop** (`main()` while loop at `cloudseed.cpp:642-683` - free-running, no sleep):
+**CloudSeed Main Loop** (`main()` while loop at `cloudseed.cpp:634-675` - free-running, no sleep):
 1. **Handle preset changes**: set `presetChangeInProgress`, then `cyclePreset()`,
    `saveSettings()`, `startBlinkSequence(getPresetBlinkPattern(...))`, `System::Delay(10)`,
-   then clear the flag to re-enable audio processing (`:644-661`)
-2. **Handle bypass persistence**: `triggerBypassSave` → `saveSettings()` (`:665-668`)
-3. **Handle flash writes**: `triggerSettingsSave` → `SavedSettings.Save()` (`:671-674`)
-4. **Update LED2 blink state**: `updateBlinkState()` (`:677`)
+   then clear the flag to re-enable audio processing (`:636-653`)
+2. **Handle bypass persistence**: `triggerBypassSave` → `saveSettings()` (`:657-660`)
+3. **Handle flash writes**: `triggerSettingsSave` → `SavedSettings.Save()` (`:663-666`)
+4. **Update LED2 blink state**: `updateBlinkState()` (`:669`)
 5. `dummy_trig_value = sinf(0.12345f)` — deliberate busy work written to a `volatile` global
    that keeps the STM32 out of a low-power state and reduces an audible 1 kHz whine
-   (`:682`). There is no loop delay; the loop spins
+   (`:674`). There is no loop delay; the loop spins
 
 **Performance Architecture**:
 - **Audio callback**: Time-critical, optimized for low latency
@@ -560,7 +637,7 @@ through (`:558-562`).
   - Flash memory writes
   - LED blink state machine
 - **FPU flush-to-zero** is enabled once at the top of `main()` before `hw.Init()`
-  (`cloudseed.cpp:537`) — see [PERFORMANCE.md](PERFORMANCE.md) §1
+  (`cloudseed.cpp:553`) — see [PERFORMANCE.md](PERFORMANCE.md) §1
 
 This separation prevents audio glitches during preset changes and flash writes.
 
@@ -583,16 +660,16 @@ hw.seed.PrintLine("Debug: value = %f", some_value);
 ### LED Indicators
 
 ```cpp
-// Terrarium LEDs are daisy::Led members of PedalState (cloudseed.cpp:191-192, init :576-580).
+// Terrarium LEDs are daisy::Led members of PedalState (cloudseed.cpp:129-130, init :558-562).
 // DaisyPetal has no led1/led2 members - it exposes SetRingLed/SetFootswitchLed/ClearLeds
 // for the Daisy Petal board's own I2C LED driver, which Terrarium does not use.
 state.led2.Set(parameter_value);  // 0.0-1.0
 state.led2.Update();
 ```
 
-Caveat: `updateBlinkState()` (`cloudseed.cpp:333-382`) drives LED2 on every main-loop pass and
+Caveat: `updateBlinkState()` (`cloudseed.cpp:320-369`) drives LED2 on every main-loop pass and
 will overwrite debug values unless that call is removed. LED1 is likewise re-set on every
-bypass toggle (`cloudseed.cpp:409`).
+bypass toggle (`cloudseed.cpp:392`).
 
 ### Common Issues
 
@@ -628,14 +705,20 @@ bypass toggle (`cloudseed.cpp:409`).
 ### Memory Usage
 
 **CloudSeed** (from the linker's `--print-memory-usage` report, `make libs && make` on this tree):
-- SDRAM: 51,742,752 B of 64MB (77.10%), entirely static `DSY_SDRAM_BSS`: `custom_pool`
-  50,331,648 B + `CloudSeed::FastSin::data` 131,072 B + `AudioLib::ValueTables` tables
-  1,280,032 B (see the `.sdram_bss` section in `build/cloudseed.map`)
+- SDRAM: 51,934,752 B of 64MB (77.39%), entirely static `DSY_SDRAM_BSS`: `custom_pool`
+  50,331,648 B + `reverseDelayBuffer` 192,000 B + `CloudSeed::FastSin::data` 131,072 B +
+  `AudioLib::ValueTables` tables 1,280,032 B (see the `.sdram_bss` section in
+  `build/cloudseed.map`). The TOML parse arena adds nothing: it is carved from `custom_pool`
+  and abandoned before the reverb allocates
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
   (`libdaisy/core/STM32H750IB_sram.lds:244-251`), which is where `DelayLine`'s `tempBuffer`,
   `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:44-46`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 140,152 B of 480KB (28.51%)
-- DTCMRAM: 15,276 B of 128KB (11.65%); RAM_D2_DMA: 16,968 B of 32KB (51.78%)
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 180,428 B of 480KB (36.71%). Of that, the
+  embedded `presets.toml` blob is 29,576 B (`build/presets_toml.o`), tomlc99 is 14,371 B, and
+  `preset_bank.o` is 3,531 B; deleting the ten `initFactory*` bodies gave back most of the
+  difference, for a net +24,010 B against the pre-TOML build
+- DTCMRAM: 20,260 B of 128KB (15.46%) — includes the 3,844 B `gPresets` bank;
+  RAM_D2_DMA: 16,968 B of 32KB (51.78%)
 
 ### Optimization Tips
 
@@ -679,19 +762,22 @@ Key changes in this fork:
 3. Added preset cycling via footswitch
 4. Simplified control scheme for guitar pedal use
 5. Added delay line switching via toggle switches
-6. **Bypass state persisted to flash** alongside the preset (`SETTINGS_VERSION 2`, `cloudseed.cpp:146-160`)
+6. **Bypass state persisted to flash** alongside the preset (`SETTINGS_VERSION 2`, `cloudseed.cpp:82-96`)
 7. **Persistent preset storage** in QSPI flash memory with version control
 8. **LED2 blink pattern system** for visual preset indication
-9. **Array-based preset configuration** with function pointers and designated initializers
+9. **TOML-defined presets**: all preset data lives in [presets.toml](presets.toml), embedded in
+   the firmware image with `.incbin` and parsed at boot by a vendored tomlc99 into a static
+   `PresetBank`; `make presets-check` proves the parsed values match the original hard-coded
+   floats bit-for-bit
 10. **Performance optimization**: Moved preset switching and flash writes from audio callback to main loop
 11. **Modulo-based preset cycling** for cleaner wraparound logic
 12. **Through the Looking Glass Preset** enabled by adopting a `max_delay_lines` value for each preset
 13. **Equal-power makeup gain** on the wet path, so perceived loudness holds as the dry/wet
-    balance changes (`cloudseed.cpp:508-556`)
+    balance changes (`cloudseed.cpp:491-539`)
 14. **1 kHz whine mitigation**: the reverb is still processed while bypassed
-    (`cloudseed.cpp:503-505`) and the main loop performs a `volatile` `sinf()` write
-    (`cloudseed.cpp:682`) to keep the STM32 out of a low-power state
-15. **FPU flush-to-zero enabled at boot** to eliminate denormal stalls (`cloudseed.cpp:537`)
+    (`cloudseed.cpp:486-488`) and the main loop performs a `volatile` `sinf()` write
+    (`cloudseed.cpp:674`) to keep the STM32 out of a low-power state
+15. **FPU flush-to-zero enabled at boot** to eliminate denormal stalls (`cloudseed.cpp:553`)
 16. **`BOOT_SRAM` app type** (`Makefile:6`): the app is loaded into SRAM from QSPI flash by
     the Daisy bootloader, leaving room for all ten presets
 
@@ -711,32 +797,35 @@ them here.
 ```bash
 make clean         # Clean previous build
 make libs          # Rebuild libdaisy, DaisySP, and libcloudseed (clean all)
+make presets-check # Validate presets.toml against tools/presets_expected.txt
 make               # Build CloudSeed
 make program-boot  # One time: flash the Daisy bootloader (BOOT_SRAM prerequisite)
 make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run)
 ```
 
 ### File Locations
-- Control mapping: `cloudseed.cpp:588-593` (knob `Init()`), `cloudseed.cpp:438-465` (parameter writes)
-- Preset array configuration: `cloudseed.cpp:79-141` (`PRESETS[]`)
-- Preset initialization functions: `CloudSeed/ReverbController.h` (`initFactoryChorus` :53 through `initFactoryDarkPlate` :579)
-- Parameters: `CloudSeed/Parameter.h`
+- Control mapping: `cloudseed.cpp:587-592` (knob `Init()`), `cloudseed.cpp:421-448` (parameter writes)
+- Preset data: `presets.toml` (embedded via `presets_toml.s`, parsed by `preset_bank.cpp`)
+- Preset application: `CloudSeed/ReverbController.h:47` (`LoadPreset`)
+- Parameters: `CloudSeed/Parameter.h`; names table: `CloudSeed/ParameterNames.h`
 - Hardware config: `Terrarium/terrarium.h`
 
 ### Key Concepts
 - Buffer size: 48 samples
 - Sample rate: 48kHz (typical)
-- SDRAM pool: 48MB
-- Delay lines: 5 (mono Terrarium), capped per preset by `PresetConfig::max_delay_lines`
-- Presets: 10 factory presets (array-based, auto-counted)
-- Persistent storage: preset + bypass, QSPI flash, `SETTINGS_VERSION 2`
+- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena)
+- Delay lines: 5 (mono Terrarium), capped per preset by `max_delay_lines` in presets.toml
+- Presets: 10, defined in presets.toml, `gPresets.count` at runtime (max `kMaxPresets` = 16)
+- Persistent storage: preset index + bypass, QSPI flash, `SETTINGS_VERSION 2` - preset order
+  in presets.toml is frozen unless the version is bumped
 - App type: `BOOT_SRAM` (app runs from SRAM, loaded by the Daisy bootloader)
-- LED2: Continuous blink pattern indicates preset number
+- LED2: Continuous blink pattern indicates preset number; both LEDs blinking together at 5 Hz
+  with no audio means the embedded TOML failed to parse
 
 ### Quick Modifications
-1. Control mapping → `cloudseed.cpp:588-593` (knob `Init()` calls)
-2. Parameter ranges → `Init()` calls at `cloudseed.cpp:588-593`
-3. Add/modify presets → `cloudseed.cpp:79-141` (`PRESETS[]`)
-4. Blink patterns → `cloudseed.cpp:79-141` (`.blinkPattern` fields)
-5. Switch logic → `cloudseed.cpp:468-489` (delay line count, `max_delay_lines` clamp, Bloom)
-6. LED2 blink behavior → `cloudseed.cpp:333-382` (`updateBlinkState`)
+1. Control mapping → `cloudseed.cpp:587-592` (knob `Init()` calls)
+2. Parameter ranges → `Init()` calls at `cloudseed.cpp:587-592`
+3. Add/modify presets → `presets.toml`, then `make presets-check`
+4. Blink patterns → `blinks` / `led_on_ms` / `led_off_ms` / `led_pause_ms` in `presets.toml`
+5. Switch logic → `cloudseed.cpp:451-472` (delay line count, `max_delay_lines` clamp, Bloom)
+6. LED2 blink behavior → `cloudseed.cpp:320-369` (`updateBlinkState`)

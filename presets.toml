@@ -1,0 +1,861 @@
+# CloudSeed reverb presets for the Terrarium pedal.
+#
+# This file is compiled into the firmware image (see presets_toml.s) and parsed
+# once at boot. Edit values here, then rebuild and reflash:
+#     make presets-check && make && make program-dfu
+#
+# Rules enforced by the parser (a violation stops boot and blinks both LEDs):
+#   * Preset order is the order below. The index is stored in QSPI flash, so
+#     reordering or deleting presets invalidates saved settings.
+#   * Every [preset.params.*] group must contain exactly the keys listed for it;
+#     a key in the wrong group, an unknown key, or a missing key is an error.
+#   * LineCount and isReverse must NOT appear: they are driven live by SWITCH_1
+#     (delay line count) and SWITCH_4 (bloom).
+#
+# Every parameter value is normalized 0.0-1.0. The engine maps it to the real
+# range noted in the comments below.
+#
+# PARAMETER REFERENCE (values are normalized 0.0-1.0; the engine maps them to the
+# real ranges shown here). Each preset repeats these groups with its own values.
+#
+#   [preset.params.input]  Input stage: pre-delay and the input filters feeding the whole reverb.
+#     InputMix        stereo input blend; unused in this mono fork, kept so the value set stays complete
+#     PreDelay        delay before the reverb, 0-1000 ms
+#     HiPassEnabled   on when >= 0.5: enables the input high-pass
+#     HighPass        input high-pass cutoff, 20-1000 Hz
+#     LowPassEnabled  on when >= 0.5: enables the input low-pass
+#     LowPass         input low-pass cutoff, 400-20000 Hz
+#
+#   [preset.params.early]  Early reflections: the multi-tap delay that follows the input stage.
+#     TapCount   number of early-reflection taps, 1-50
+#     TapLength  time spread of the taps, 0-500 ms
+#     TapGain    gain of the tap bank, 2-decade curve
+#     TapDecay   how fast tap gain falls across the bank, 0-1
+#
+#   [preset.params.early_diffusion]  Early diffusion: allpass chain that smears the early reflections.
+#     DiffusionEnabled         on when >= 0.5: runs the early allpass diffuser
+#     DiffusionStages          allpass stages in series, 1-2
+#     DiffusionDelay           delay per allpass stage, 10-100 ms
+#     DiffusionFeedback        allpass feedback, 0-1
+#     EarlyDiffusionModAmount  allpass delay modulation depth, 0-2.5 ms
+#     EarlyDiffusionModRate    allpass delay modulation rate, 0-5 Hz
+#
+#   [preset.params.late]  Late reverb lines: the feedback delay network that generates the tail.
+#     LineDelay       delay per line, 20-1000 ms (line count comes from SWITCH_1, not this file)
+#     LineDecay       tail decay time, 0.05-60 s
+#     LineModAmount   line delay modulation depth, 0-2.5 ms
+#     LineModRate     line delay modulation rate, 0-5 Hz
+#     LateStageTap    on when >= 0.5: tap the line after diffusion instead of before
+#     Interpolation   on when >= 0.5: fractional-delay interpolation (smoother modulation, more CPU)
+#
+#   [preset.params.late_diffusion]  Late diffusion: allpass chain inside each delay line.
+#     LateDiffusionEnabled    on when >= 0.5: runs the per-line allpass diffuser
+#     LateDiffusionStages     allpass stages per line, 1-2
+#     LateDiffusionDelay      delay per allpass stage, 10-100 ms
+#     LateDiffusionFeedback   allpass feedback, 0-1
+#     LateDiffusionModAmount  allpass delay modulation depth, 0-2.5 ms
+#     LateDiffusionModRate    allpass delay modulation rate, 0-5 Hz
+#
+#   [preset.params.late_eq]  Late EQ: shelves and low-pass applied inside each line's feedback path.
+#     LowShelfEnabled         on when >= 0.5: enables the low shelf
+#     PostLowShelfGain        low shelf gain, 2-decade curve
+#     PostLowShelfFrequency   low shelf corner, 20-1000 Hz
+#     HighShelfEnabled        on when >= 0.5: enables the high shelf
+#     PostHighShelfGain       high shelf gain, 2-decade curve
+#     PostHighShelfFrequency  high shelf corner, 400-20000 Hz
+#     CutoffEnabled           on when >= 0.5: enables the in-loop low-pass
+#     PostCutoffFrequency     in-loop low-pass cutoff, 400-20000 Hz
+#
+#   [preset.params.seeds]  Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+#     TapSeed            early tap pattern seed, value x 1000000
+#     DiffusionSeed      early diffuser seed, value x 1000000
+#     DelaySeed          delay line length seed, value x 1000000
+#     PostDiffusionSeed  late diffuser seed, value x 1000000
+#     CrossSeed          stereo seed offset; no audible effect in this mono fork
+#
+#   [preset.params.output]  Output mix: level of each stage in the final signal.
+#     DryOut       dry signal level, 2-decade curve
+#     PredelayOut  pre-delay tap level, 2-decade curve
+#     EarlyOut     early reflection level, 2-decade curve
+#     MainOut      late reverb level, 2-decade curve
+#
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Chorus"
+blinks = 1
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 5.0
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.0
+PreDelay       = 0.070000000298023224
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 0.0
+LowPass        = 0.29000008106231689
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 0.36499997973442078
+TapLength = 1.0
+TapGain   = 1.0
+TapDecay  = 0.86500012874603271
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1.0
+DiffusionStages         = 0.4285714328289032
+DiffusionDelay          = 0.43500006198883057
+DiffusionFeedback       = 0.725000262260437
+EarlyDiffusionModAmount = 0.50000005960464478
+EarlyDiffusionModRate   = 0.42500010132789612
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.68499988317489624
+LineDecay     = 0.68000012636184692
+LineModAmount = 0.59000003337860107
+LineModRate   = 0.46999993920326233
+LateStageTap  = 1.0
+Interpolation = 0.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 1.0
+LateDiffusionStages    = 0.28571429848670959
+LateDiffusionDelay     = 0.54499995708465576
+LateDiffusionFeedback  = 0.65999996662139893
+LateDiffusionModAmount = 0.619999885559082
+LateDiffusionModRate   = 0.42500019073486328
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 0.0
+PostLowShelfGain       = 0.5199999213218689
+PostLowShelfFrequency  = 0.31499990820884705
+HighShelfEnabled       = 0.0
+PostHighShelfGain      = 0.83500003814697266
+PostHighShelfFrequency = 0.73000013828277588
+CutoffEnabled          = 1.0
+PostCutoffFrequency    = 0.73499983549118042
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.0011500000255182385
+DiffusionSeed     = 0.00018899999849963933
+DelaySeed         = 0.00033700000494718552
+PostDiffusionSeed = 0.00050099997315555811
+CrossSeed         = 0.0
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 0.94499987363815308
+PredelayOut = 0.0
+EarlyOut    = 0.77999997138977051
+MainOut     = 0.74500006437301636
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Dull Echos"
+blinks = 2
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 5.0
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.0
+PreDelay       = 0.070000000298023224
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 1.0
+LowPass        = 0.29000008106231689
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 0.36499997973442078
+TapLength = 1.0
+TapGain   = 0.83499991893768311
+TapDecay  = 0.86500012874603271
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1.0
+DiffusionStages         = 0.4285714328289032
+DiffusionDelay          = 0.43500006198883057
+DiffusionFeedback       = 0.725000262260437
+EarlyDiffusionModAmount = 0.25499999523162842
+EarlyDiffusionModRate   = 0.3250001072883606
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.34500002861022949
+LineDecay     = 0.41500008106231689
+LineModAmount = 0.33500000834465027
+LineModRate   = 0.26999998092651367
+LateStageTap  = 0.0
+Interpolation = 1.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 0.0
+LateDiffusionStages    = 0.57142859697341919
+LateDiffusionDelay     = 0.66499996185302734
+LateDiffusionFeedback  = 0.61000001430511475
+LateDiffusionModAmount = 0.13499975204467773
+LateDiffusionModRate   = 0.27500006556510925
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 0.0
+PostLowShelfGain       = 0.5199999213218689
+PostLowShelfFrequency  = 0.31499990820884705
+HighShelfEnabled       = 0.0
+PostHighShelfGain      = 0.83500003814697266
+PostHighShelfFrequency = 0.73000013828277588
+CutoffEnabled          = 1.0
+PostCutoffFrequency    = 0.73499983549118042
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.0011500000255182385
+DiffusionSeed     = 0.00018899999849963933
+DelaySeed         = 0.0002730000123847276
+PostDiffusionSeed = 0.00050099997315555811
+CrossSeed         = 0.5
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 1.0
+PredelayOut = 0.0
+EarlyOut    = 0.77999997138977051
+MainOut     = 0.74500006437301636
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Hyperplane"
+blinks = 3
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 5.0
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.1549999862909317
+PreDelay       = 0.0
+HiPassEnabled  = 1.0
+HighPass       = 0.57999998331069946
+LowPassEnabled = 1.0
+LowPass        = 0.9100000262260437
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 0.41499990224838257
+TapLength = 0.43999996781349182
+TapGain   = 1.0
+TapDecay  = 1.0
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1.0
+DiffusionStages         = 0.4285714328289032
+DiffusionDelay          = 0.27500024437904358
+DiffusionFeedback       = 0.660000205039978
+EarlyDiffusionModAmount = 0.13499999046325684
+EarlyDiffusionModRate   = 0.29000008106231689
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.22500017285346985
+LineDecay     = 0.794999897480011
+LineModAmount = 0.53999996185302734
+LineModRate   = 0.44999989867210388
+LateStageTap  = 1.0
+Interpolation = 0.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 1.0
+LateDiffusionStages    = 1.0
+LateDiffusionDelay     = 0.22999951243400574
+LateDiffusionFeedback  = 0.59499990940093994
+LateDiffusionModAmount = 0.15999998152256012
+LateDiffusionModRate   = 0.56000012159347534
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 1.0
+PostLowShelfGain       = 0.95999979972839355
+PostLowShelfFrequency  = 0.23999994993209839
+HighShelfEnabled       = 1.0
+PostHighShelfGain      = 0.97500002384185791
+PostHighShelfFrequency = 0.78499996662139893
+CutoffEnabled          = 1.0
+PostCutoffFrequency    = 0.87999981641769409
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.00048499999684281647
+DiffusionSeed     = 0.00020799999765586108
+DelaySeed         = 0.00034699999378062785
+PostDiffusionSeed = 0.00037200000951997936
+CrossSeed         = 0.800000011920929
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 0.86500018835067749
+PredelayOut = 0.0
+EarlyOut    = 0.8200000524520874
+MainOut     = 0.79500007629394531
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Medium Space"
+blinks = 4
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 5.0
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.0
+PreDelay       = 0.0
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 1.0
+LowPass        = 0.63999992609024048
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 0.51999980211257935
+TapLength = 0.26499992609024048
+TapGain   = 0.69499999284744263
+TapDecay  = 1.0
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1.0
+DiffusionStages         = 0.8571428656578064
+DiffusionDelay          = 0.5700000524520874
+DiffusionFeedback       = 0.76000010967254639
+EarlyDiffusionModAmount = 0.13499999046325684
+EarlyDiffusionModRate   = 0.26000010967254639
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.585000216960907
+LineDecay     = 0.29499980807304382
+LineModAmount = 0.054999928921461105
+LineModRate   = 0.21499986946582794
+LateStageTap  = 1.0
+Interpolation = 1.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 1.0
+LateDiffusionStages    = 0.57142859697341919
+LateDiffusionDelay     = 0.69499951601028442
+LateDiffusionFeedback  = 0.71499985456466675
+LateDiffusionModAmount = 0.17999963462352753
+LateDiffusionModRate   = 0.38000011444091797
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 1.0
+PostLowShelfGain       = 0.87999987602233887
+PostLowShelfFrequency  = 0.19499993324279785
+HighShelfEnabled       = 0.0
+PostHighShelfGain      = 0.72000008821487427
+PostHighShelfFrequency = 0.520000159740448
+CutoffEnabled          = 1.0
+PostCutoffFrequency    = 0.79999983310699463
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.0003009999927598983
+DiffusionSeed     = 0.00018899999849963933
+DelaySeed         = 0.0001610000035725534
+PostDiffusionSeed = 0.00050099997315555811
+CrossSeed         = 0.7850000262260437
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 1.0
+PredelayOut = 0.0
+EarlyOut    = 0.699999988079071
+MainOut     = 0.84499984979629517
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Noise in the Hallway"
+blinks = 5
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 5.0
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.0
+PreDelay       = 0.0
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 1.0
+LowPass        = 0.60999995470047
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 1.0
+TapLength = 1.0
+TapGain   = 0.0
+TapDecay  = 0.830000102519989
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1.0
+DiffusionStages         = 0.28571429848670959
+DiffusionDelay          = 0.35499998927116394
+DiffusionFeedback       = 0.62500005960464478
+EarlyDiffusionModAmount = 0.0
+EarlyDiffusionModRate   = 0.0
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.36000004410743713
+LineDecay     = 0.51000005006790161
+LineModAmount = 0.0
+LineModRate   = 0.0
+LateStageTap  = 0.0
+Interpolation = 1.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 1.0
+LateDiffusionStages    = 0.0
+LateDiffusionDelay     = 0.62999987602233887
+LateDiffusionFeedback  = 0.49000000953674316
+LateDiffusionModAmount = 0.0
+LateDiffusionModRate   = 0.0
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 0.0
+PostLowShelfGain       = 0.0
+PostLowShelfFrequency  = 0.0
+HighShelfEnabled       = 1.0
+PostHighShelfGain      = 0.77499985694885254
+PostHighShelfFrequency = 0.58000004291534424
+CutoffEnabled          = 0.0
+PostCutoffFrequency    = 0.0
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.0001140000022132881
+DiffusionSeed     = 0.000155999994603917
+DelaySeed         = 0.00018099999579135329
+PostDiffusionSeed = 8.4999999671708792E-05
+CrossSeed         = 1.0
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 0.0
+PredelayOut = 0.0
+EarlyOut    = 0.64500010013580322
+MainOut     = 0.63000005483627319
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Rubi Ka Fields"
+blinks = 6
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 5.0
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.32499998807907104
+PreDelay       = 0.0
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 0.0
+LowPass        = 0.8899998664855957
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 0.51999980211257935
+TapLength = 1.0
+TapGain   = 0.90000003576278687
+TapDecay  = 1.0
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1.0
+DiffusionStages         = 0.8571428656578064
+DiffusionDelay          = 0.5700000524520874
+DiffusionFeedback       = 0.76000010967254639
+EarlyDiffusionModAmount = 0.13499999046325684
+EarlyDiffusionModRate   = 0.26000010967254639
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.68500018119812012
+LineDecay     = 0.82999974489212036
+LineModAmount = 0.054999928921461105
+LineModRate   = 0.21499986946582794
+LateStageTap  = 1.0
+Interpolation = 0.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 1.0
+LateDiffusionStages    = 0.71428573131561279
+LateDiffusionDelay     = 0.69499951601028442
+LateDiffusionFeedback  = 0.71499985456466675
+LateDiffusionModAmount = 0.32499963045120239
+LateDiffusionModRate   = 0.35500010848045349
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 0.0
+PostLowShelfGain       = 0.87999987602233887
+PostLowShelfFrequency  = 0.19499993324279785
+HighShelfEnabled       = 0.0
+PostHighShelfGain      = 0.72000008821487427
+PostHighShelfFrequency = 0.520000159740448
+CutoffEnabled          = 1.0
+PostCutoffFrequency    = 0.79999983310699463
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.0003009999927598983
+DiffusionSeed     = 0.00018899999849963933
+DelaySeed         = 0.0001610000035725534
+PostDiffusionSeed = 0.00050099997315555811
+CrossSeed         = 0.43000003695487976
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 0.88499999046325684
+PredelayOut = 0.0
+EarlyOut    = 0.0
+MainOut     = 0.90999990701675415
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Small Room"
+blinks = 7
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 5.0
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.0
+PreDelay       = 0.0
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 1.0
+LowPass        = 0.755000114440918
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 0.41499990224838257
+TapLength = 0.43999996781349182
+TapGain   = 0.87999999523162842
+TapDecay  = 1.0
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1.0
+DiffusionStages         = 0.71428573131561279
+DiffusionDelay          = 0.335000216960907
+DiffusionFeedback       = 0.660000205039978
+EarlyDiffusionModAmount = 0.13499999046325684
+EarlyDiffusionModRate   = 0.29000008106231689
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.51000016927719116
+LineDecay     = 0.29999998211860657
+LineModAmount = 0.18999995291233063
+LineModRate   = 0.22999987006187439
+LateStageTap  = 1.0
+Interpolation = 1.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 1.0
+LateDiffusionStages    = 0.4285714328289032
+LateDiffusionDelay     = 0.22999951243400574
+LateDiffusionFeedback  = 0.59499990940093994
+LateDiffusionModAmount = 0.1249999925494194
+LateDiffusionModRate   = 0.28500008583068848
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 0.0
+PostLowShelfGain       = 0.87999987602233887
+PostLowShelfFrequency  = 0.19499993324279785
+HighShelfEnabled       = 0.0
+PostHighShelfGain      = 0.875
+PostHighShelfFrequency = 0.59000009298324585
+CutoffEnabled          = 0.0
+PostCutoffFrequency    = 0.79999983310699463
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.00048499999684281647
+DiffusionSeed     = 0.00020799999765586108
+DelaySeed         = 0.00033499998971819878
+PostDiffusionSeed = 0.00037200000951997936
+CrossSeed         = 0.42500001192092896
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 1.0
+PredelayOut = 0.0
+EarlyOut    = 0.8599998950958252
+MainOut     = 0.90500003099441528
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "90s Are Back"
+blinks = 8
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 5.0
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0
+PreDelay       = 0
+HiPassEnabled  = 0
+HighPass       = 0
+LowPassEnabled = 1
+LowPass        = 0.6750001311302185
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 0
+TapLength = 1
+TapGain   = 0
+TapDecay  = 0.8650001287460327
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1
+DiffusionStages         = 0.5714285969734192
+DiffusionDelay          = 0.7100000381469727
+DiffusionFeedback       = 0.5450003147125244
+EarlyDiffusionModAmount = 0.824999988079071
+EarlyDiffusionModRate   = 0.4050004780292511
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.6849998831748962
+LineDecay     = 0.6300000548362732
+LineModAmount = 0.6300000548362732
+LineModRate   = 0.3199999928474426
+LateStageTap  = 1
+Interpolation = 1
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 0
+LateDiffusionStages    = 0.2857142984867096
+LateDiffusionDelay     = 0.5449999570846558
+LateDiffusionFeedback  = 0.6599999666213989
+LateDiffusionModAmount = 0.619999885559082
+LateDiffusionModRate   = 0.30000022053718567
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 0
+PostLowShelfGain       = 0.5199999213218689
+PostLowShelfFrequency  = 0.31499990820884705
+HighShelfEnabled       = 1
+PostHighShelfGain      = 0.8349999189376831
+PostHighShelfFrequency = 0.705000102519989
+CutoffEnabled          = 0
+PostCutoffFrequency    = 0.7349998354911804
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.0011500000255182385
+DiffusionSeed     = 0.00018899999849963933
+DelaySeed         = 0.0003370000049471855
+PostDiffusionSeed = 0.0005009999731555581
+CrossSeed         = 0.7950000166893005
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 0.9449997544288635
+PredelayOut = 0
+EarlyOut    = 0.7250000238418579
+MainOut     = 0.6050001382827759
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Through the Looking Glass"
+blinks = 9
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 4.0
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.0
+PreDelay       = 0.0
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 1.0
+LowPass        = 0.74000012874603271
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 1.0
+TapLength = 1.0
+TapGain   = 1.0
+TapDecay  = 0.71000003814697266
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1.0
+DiffusionStages         = 1.0
+DiffusionDelay          = 0.65999996662139893
+DiffusionFeedback       = 0.76000010967254639
+EarlyDiffusionModAmount = 0.41999998688697815
+EarlyDiffusionModRate   = 0.30500012636184692
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.9100002646446228
+LineDecay     = 0.80999958515167236
+LineModAmount = 0.4649999737739563
+LineModRate   = 0.3199998140335083
+LateStageTap  = 1.0
+Interpolation = 1.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 1.0
+LateDiffusionStages    = 1.0
+LateDiffusionDelay     = 0.71499955654144287
+LateDiffusionFeedback  = 0.71999979019165039
+LateDiffusionModAmount = 0.40999993681907654
+LateDiffusionModRate   = 0.31500011682510376
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 0.0
+PostLowShelfGain       = 0.87999987602233887
+PostLowShelfFrequency  = 0.19499993324279785
+HighShelfEnabled       = 0.0
+PostHighShelfGain      = 0.72000008821487427
+PostHighShelfFrequency = 0.520000159740448
+CutoffEnabled          = 1.0
+PostCutoffFrequency    = 0.7150002121925354
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.0003009999927598983
+DiffusionSeed     = 0.00018899999849963933
+DelaySeed         = 0.0001610000035725534
+PostDiffusionSeed = 0.00050099997315555811
+CrossSeed         = 1.0
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 0.0
+PredelayOut = 0.0
+EarlyOut    = 0.0
+MainOut     = 0.95499974489212036
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Dark Plate"
+blinks = 10
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+max_delay_lines = 5.0
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.0
+PreDelay       = 0.0
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 0.0
+LowPass        = 0.2933000028133392
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 0.1959999948740005
+TapLength = 0.9866999983787537
+TapGain   = 1.0
+TapDecay  = 1.0
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 0.0
+DiffusionStages         = 1.0
+DiffusionDelay          = 0.3066999912261963
+DiffusionFeedback       = 0.7706999778747559
+EarlyDiffusionModAmount = 0.143899992108345
+EarlyDiffusionModRate   = 0.2466999888420105
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.9100002646446228
+LineDecay     = 0.6345999836921692
+LineModAmount = 0.2719999849796295
+LineModRate   = 0.2292999923229218
+LateStageTap  = 1.0
+Interpolation = 1.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 1.0
+LateDiffusionStages    = 1.0
+LateDiffusionDelay     = 0.239999994635582
+LateDiffusionFeedback  = 0.8506999611854553
+LateDiffusionModAmount = 0.1467999964952469
+LateDiffusionModRate   = 0.1666999906301498
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 0.0
+PostLowShelfGain       = 0.5559999942779541
+PostLowShelfFrequency  = 0.3879999816417694
+HighShelfEnabled       = 1.0
+PostHighShelfGain      = 0.7680000066757202
+PostHighShelfFrequency = 0.5133999586105347
+CutoffEnabled          = 1.0
+PostCutoffFrequency    = 0.9759999513626099
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.3339999914169312
+DiffusionSeed     = 0.1850000023841858
+DelaySeed         = 0.2180999964475632
+PostDiffusionSeed = 0.3652999997138977
+CrossSeed         = 1.0
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 0.0
+PredelayOut = 0.0
+EarlyOut    = 0.0
+MainOut     = 0.95499974489212036

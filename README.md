@@ -15,6 +15,8 @@ This fork extends those capabilities and adds a few extras:
 - Bypass state is saved between power cycles
 - Agent-guided performance optimizations
 - Reduced 1khz whine while active or bypassed 
+- Presets are defined in [presets.toml](presets.toml), not in C++. The file is compiled into
+  the firmware image and parsed at boot; edit values there and reflash
 
 # DaisyCloudSeed (GuitarML fork for Terrarium)
 Cloud Seed is an open source algorithmic reverb plugin under the MIT license, which can be found at [ValdemarOrn/CloudSeed](https://github.com/ValdemarOrn/CloudSeed).
@@ -43,6 +45,24 @@ make program-boot
 # Hit restart and then hold Boot on your DaisySeed until you see a rapid blink
 make program-dfu
 ```
+
+## Editing presets
+
+All ten presets live in [presets.toml](presets.toml) at the repo root - names, LED blink
+timing, the per-preset delay-line cap, and all 45 reverb parameters. The file is embedded into
+the firmware image, so changing a preset is:
+```
+# edit presets.toml, then:
+make presets-check   # validates the file with the same parser the pedal uses
+make
+make program-dfu
+```
+`make presets-check` fails on an unknown or misplaced parameter, a missing group, a bad range,
+or any drift from the original factory values. If a broken file is ever flashed, the pedal
+blinks **both** LEDs together at 5 Hz and stays silent instead of running with junk settings.
+
+Preset order is stored in flash: append new `[[preset]]` entries at the end, and bump
+`SETTINGS_VERSION` in `cloudseed.cpp` if you reorder or delete any.
 
 # Control
 

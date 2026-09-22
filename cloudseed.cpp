@@ -9,6 +9,8 @@
 #include "cmsis_gcc.h"
 #include <cmath>
 #include <array>
+#include <stdio.h>
+#include <string.h>
 
 #include "CloudSeed/Default.h"
 #include "CloudSeed/ReverbController.h"
@@ -16,6 +18,7 @@
 #include "CloudSeed/AudioLib/ValueTables.h"
 #include "CloudSeed/AudioLib/MathDefs.h"
 #include "CloudSeed/ReverseDelay.h"
+#include "preset_bank.h"
 
 using namespace daisy;
 using namespace daisysp;
@@ -66,81 +69,14 @@ struct BlinkState {
     BlinkPattern pattern;
 };
 
-// Preset configuration structure
-struct PresetConfig {
-    void (CloudSeed::ReverbController::*initFunction)();  // Function pointer to init method
-    BlinkPattern blinkPattern;
-    const char* name;  // Preset name for reference
-    const float max_delay_lines; // Limit the number of lines to prevent skipping/dropped audio
-};
+// Presets are defined in presets.toml, embedded into the firmware image by
+// presets_toml.s and parsed once at boot into gPresets.
+extern "C" {
+    extern const char     presets_toml[];
+    extern const uint32_t presets_toml_len;  // includes the terminating NUL
+}
 
-// Array of all available presets
-// To add/remove presets, simply modify this array - no other code changes needed
-const PresetConfig PRESETS[] = {
-    {
-        .initFunction = &CloudSeed::ReverbController::initFactoryChorus,
-        .blinkPattern = {.numBlinks = 1, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Chorus",
-        .max_delay_lines = 5.0f
-    },
-    {
-        .initFunction = &CloudSeed::ReverbController::initFactoryDullEchos,
-        .blinkPattern = {.numBlinks = 2, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Dull Echos",
-        .max_delay_lines = 5.0f
-    },
-    {
-        .initFunction = &CloudSeed::ReverbController::initFactoryHyperplane,
-        .blinkPattern = {.numBlinks = 3, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Hyperplane",
-        .max_delay_lines = 5.0f
-    },
-    {
-        .initFunction = &CloudSeed::ReverbController::initFactoryMediumSpace,
-        .blinkPattern = {.numBlinks = 4, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Medium Space",
-        .max_delay_lines = 5.0f
-    },
-    {
-        .initFunction = &CloudSeed::ReverbController::initFactoryNoiseInTheHallway,
-        .blinkPattern = {.numBlinks = 5, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Noise in the Hallway",
-        .max_delay_lines = 5.0f
-    },
-    {
-        .initFunction = &CloudSeed::ReverbController::initFactoryRubiKaFields,
-        .blinkPattern = {.numBlinks = 6, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Rubi Ka Fields",
-        .max_delay_lines = 5.0f
-    },
-    {
-        .initFunction = &CloudSeed::ReverbController::initFactorySmallRoom,
-        .blinkPattern = {.numBlinks = 7, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Small Room",
-        .max_delay_lines = 5.0f
-    },
-    {
-        .initFunction = &CloudSeed::ReverbController::initFactory90sAreBack,
-        .blinkPattern = {.numBlinks = 8, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "90s Are Back",
-        .max_delay_lines = 5.0f
-    },
-    {
-        // This preset is CPU intensive and starts crackling with more than 2-3 delay lines active
-        .initFunction = &CloudSeed::ReverbController::initFactoryThroughTheLookingGlass,
-        .blinkPattern = {.numBlinks = 9, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Through the Looking Glass",
-        .max_delay_lines = 4.0f
-    },
-    {
-        .initFunction = &CloudSeed::ReverbController::initFactoryDarkPlate,
-        .blinkPattern = {.numBlinks = 10, .onDurationMs = 150, .offDurationMs = 150, .pauseAfterMs = 5000},
-        .name = "Dark Plate",
-        .max_delay_lines = 5.0f
-    }
-};
-
-constexpr int NUM_PRESETS = sizeof(PRESETS) / sizeof(PRESETS[0]);
+static PresetBank gPresets;
 
 // Persistent Settings
 struct Settings {
@@ -239,19 +175,65 @@ size_t get_pool_remaining() {
 }
 
 /*
+ * Boot-only TOML parse arena
+ */
+
+// Carved from the head of custom_pool. Nothing else has allocated from the pool
+// yet (the reverb is constructed afterwards), so the whole region is handed back
+// simply by abandoning it. The heap is deliberately avoided: libnosys' _sbrk
+// grows unchecked from end = 0x30008000 into the 256 KB RAM_D2 region, and
+// custom_pool_allocate() does not align its returns.
+constexpr size_t TOML_ARENA_SIZE = 512 * 1024;
+static size_t toml_arena_index = 0;
+
+static void* toml_arena_alloc(size_t size) {
+    const size_t aligned = (size + 7u) & ~static_cast<size_t>(7u);
+    if (toml_arena_index + aligned > TOML_ARENA_SIZE) return nullptr;
+    void* ptr = &custom_pool[toml_arena_index];
+    toml_arena_index += aligned;
+    return ptr;
+}
+
+static void toml_arena_free(void*) {}
+
+static bool loadPresetBank(char* err, int errLen) {
+    toml_arena_index = 0;
+    // toml_parse() mutates its input, so parse a scratch copy, never the .rodata blob.
+    char* scratch = static_cast<char*>(toml_arena_alloc(presets_toml_len));
+    if (!scratch) { snprintf(err, errLen, "arena too small"); return false; }
+    memcpy(scratch, presets_toml, presets_toml_len);
+    const bool ok = ParsePresetBank(scratch, gPresets, err, errLen,
+                                    toml_arena_alloc, toml_arena_free);
+    toml_arena_index = 0;  // release: custom_pool is untouched from here on
+    return ok;
+}
+
+// Unrecoverable: no presets means no reverb configuration. Blink both LEDs at 5 Hz
+// forever and never start audio, so the failure is unmistakable on the pedal.
+static void presetErrorLoop() {
+    while (true) {
+        state.led1.Set(1.0f); state.led2.Set(1.0f);
+        state.led1.Update(); state.led2.Update();
+        System::Delay(100);
+        state.led1.Set(0.0f); state.led2.Set(0.0f);
+        state.led1.Update(); state.led2.Update();
+        System::Delay(100);
+    }
+}
+
+/*
  * Presets
  */
 
 void loadPreset(int presetIndex) {
     // Validate preset index
-    if (presetIndex < 0 || presetIndex >= NUM_PRESETS) {
+    if (presetIndex < 0 || presetIndex >= gPresets.count) {
         presetIndex = 0;  // Default to first preset if invalid
     }
 
     reverb->ClearBuffers();
 
-    // Call the preset's initialization function using member function pointer
-    (reverb->*(PRESETS[presetIndex].initFunction))();
+    reverb->LoadPreset(gPresets.presets[presetIndex].params);
 }
 
 /*
@@ -275,7 +257,7 @@ void loadSettings() {
     state.currentPreset = localSettings.currentPreset;
 
     // Validate preset range and default to 0 if invalid
-    if (state.currentPreset < 0 || state.currentPreset >= NUM_PRESETS) {
+    if (state.currentPreset < 0 || state.currentPreset >= gPresets.count) {
         state.currentPreset = 0;
     }
 
@@ -299,7 +281,7 @@ void saveSettings() {
 }
 
 void cyclePreset() {
-    state.currentPreset = (state.currentPreset + 1) % NUM_PRESETS;
+    state.currentPreset = (state.currentPreset + 1) % gPresets.count;
     loadPreset(state.currentPreset);
 }
 
@@ -316,10 +298,11 @@ inline bool hasChanged(float prev, float current) {
 // Get the blink pattern for a given preset index
 BlinkPattern getPresetBlinkPattern(int presetIndex) {
     // Validate preset index
-    if (presetIndex < 0 || presetIndex >= NUM_PRESETS) {
+    if (presetIndex < 0 || presetIndex >= gPresets.count) {
         presetIndex = 0;  // Default to first preset if invalid
     }
-    return PRESETS[presetIndex].blinkPattern;
+    const PresetData& p = gPresets.presets[presetIndex];
+    return BlinkPattern{p.blinks, p.onDurationMs, p.offDurationMs, p.pauseAfterMs};
 }
 
 // Start a blink sequence
@@ -467,7 +450,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
 
     // SWITCH_1: off = 2 delay lines, on = the preset's max
     float numDelayLines = hw.switches[Terrarium::SWITCH_1].Pressed()
-        ? PRESETS[state.currentPreset].max_delay_lines
+        ? gPresets.presets[state.currentPreset].maxDelayLines
         : 2.0f;
 
     if (hasChanged(state.prevNumDelayLines, numDelayLines)) {
@@ -569,6 +552,22 @@ static void audioCallback(AudioHandle::InputBuffer  in,
 int main(void) {
     __set_FPSCR(__get_FPSCR() | (1u << 24)); // FZ: flush denormals to zero in hardware
     hw.Init();
+
+    // LEDs first: presetErrorLoop() below is the only way a parse failure can be
+    // reported on the pedal.
+    state.led1.Init(hw.seed.GetPin(Terrarium::LED_1), false);
+    state.led1.Update();
+
+    state.led2.Init(hw.seed.GetPin(Terrarium::LED_2), false);
+    state.led2.Update();
+
+    // Parse the embedded presets.toml. SDRAM is only usable after hw.Init(), and
+    // the ReverbController below is the first consumer of custom_pool, so the
+    // scratch arena window is exactly here.
+    char presetErr[128];
+    if (!loadPresetBank(presetErr, sizeof presetErr))
+        presetErrorLoop();
+
     const float sampleRate = hw.AudioSampleRate();
 
     // Initialize audio processing libraries
@@ -611,13 +610,6 @@ int main(void) {
     state.presetChangeInProgress = false;
     state.reverseDelayOn = false;
     state.reverseMix = 0.0f;
-
-    // Initialize LEDs
-    state.led1.Init(hw.seed.GetPin(Terrarium::LED_1), false);
-    state.led1.Update();
-
-    state.led2.Init(hw.seed.GetPin(Terrarium::LED_2), false);
-    state.led2.Update();
 
     // Initialize persistent storage with default settings
     Settings defaultSettings = {
