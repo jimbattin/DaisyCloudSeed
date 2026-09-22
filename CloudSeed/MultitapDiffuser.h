@@ -52,6 +52,7 @@ namespace CloudSeed
 			gain = 1.0;
 			decay = 0.0;
 			crossSeed = 0.0;
+			isReverse = false;
 			UpdateSeeds();
 		}
 

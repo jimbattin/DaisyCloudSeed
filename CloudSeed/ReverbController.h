@@ -37,6 +37,8 @@ namespace CloudSeed
 			//, channelR(bufferSize, samplerate, ChannelLR::Right)
 		{
 			this->samplerate = samplerate;
+			for (int i = 0; i < (int)Parameter::Count; i++)
+				parameters[i] = 0.0f;
 			initFactoryChorus();
 			//initFactoryDullEchos();
 			//initFactoryHyperplane();
