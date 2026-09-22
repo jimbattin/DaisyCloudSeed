@@ -173,7 +173,7 @@ namespace CloudSeed
 			vector<float> tapData(count, 0.0);
 
 			auto sumLengths = 0.0;
-			for (size_t i = 0; i < count; i++)
+			for (int i = 0; i < count; i++)
 			{
 				auto val = 0.1 + rand();
 				tapData[i] = val;

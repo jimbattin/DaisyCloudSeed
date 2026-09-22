@@ -110,7 +110,7 @@ namespace CloudSeed
 
 		void SetModAmount(float amount)
 		{
-			for (int i = 0; i < filters.size(); i++)
+			for (size_t i = 0; i < filters.size(); i++)
 			{
 				filters[i]->ModAmount = amount * (0.85 + 0.3 * seedValues[MaxStageCount + i]);
 			}

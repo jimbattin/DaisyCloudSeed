@@ -74,9 +74,9 @@ namespace CloudSeed
 		ReverbChannel(int bufferSize, int samplerate, ChannelLR leftOrRight)
 			: preDelay(bufferSize, (int)(samplerate * 1.0), 100) // 1 second delay buffer
 			, multitap(samplerate) // use samplerate = 1 second delay buffer
+			, diffuser(samplerate, 150) // 150ms buffer, to allow for 100ms + modulation time
 			, highPass(samplerate)
 			, lowPass(samplerate)
-			, diffuser(samplerate, 150) // 150ms buffer, to allow for 100ms + modulation time
 		{
 			this->channelLr = leftOrRight;
 
@@ -123,7 +123,7 @@ namespace CloudSeed
 			highPass.SetSamplerate(samplerate);
 			lowPass.SetSamplerate(samplerate);
 
-			for (int i = 0; i < lines.size(); i++)
+			for (size_t i = 0; i < lines.size(); i++)
 			{
 				lines[i]->SetSamplerate(samplerate);
 			}
@@ -157,6 +157,12 @@ namespace CloudSeed
 
 			switch (para)
 			{
+			// Stored to parameters[] above; no per-channel action in the mono fork.
+			// (InputMix L/R mixing is disabled — see ReverbController.h GetScaledParameter.)
+			case Parameter::InputMix:
+			case Parameter::Unused:
+			case Parameter::Count:
+				break;
 			case Parameter::PreDelay:
 				preDelay.SampleDelay = (int)Ms2Samples(value);
 				break;
@@ -476,7 +482,7 @@ namespace CloudSeed
 
 		void UpdatePostDiffusion()
 		{
-			for (int i = 0; i < lines.size(); i++)
+			for (size_t i = 0; i < lines.size(); i++)
 				lines[i]->SetDiffuserSeed(((long long)postDiffusionSeed) * (i + 1), crossSeed);
 		}
 
