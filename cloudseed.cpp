@@ -10,11 +10,11 @@
 #include <cmath>
 #include <array>
 
-#include "../../CloudSeed/Default.h"
-#include "../../CloudSeed/ReverbController.h"
-#include "../../CloudSeed/FastSin.h"
-#include "../../CloudSeed/AudioLib/ValueTables.h"
-#include "../../CloudSeed/AudioLib/MathDefs.h"
+#include "CloudSeed/Default.h"
+#include "CloudSeed/ReverbController.h"
+#include "CloudSeed/FastSin.h"
+#include "CloudSeed/AudioLib/ValueTables.h"
+#include "CloudSeed/AudioLib/MathDefs.h"
 
 using namespace daisy;
 using namespace daisysp;
