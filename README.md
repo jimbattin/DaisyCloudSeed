@@ -4,8 +4,8 @@ This is a fork from https://github.com/optilude/DaisyCloudSeed a fork that impro
 This fork extends those capabilities and adds a few extras:
 
 - Switch remap: SW1 selects delay-line count (2 vs. the preset maximum), SW3 engages a
-  classic Reverse Delay, SW2 routes that reverse (off = into the reverb's wet tail, on =
-  straight into the output mix), and SW4 keeps the "Bloom" effect, similar to a "reverse
+  classic Reverse Delay, SW4 routes that reverse (off = into the reverb's wet tail, on =
+  straight into the output mix), and SW2 keeps the "Bloom" effect, similar to a "reverse
   reverb" (Bloom reverses the order of tap gains. Has no effect on patches with a single tap.)
 - More program storage (Moved the application to SRAM)
 - Wider range of preset support offered by placing a limit on the number of delay lines for each preset
@@ -75,9 +75,9 @@ Preset order is stored in flash: append new `[[preset]]` entries at the end, and
 | Ctrl 5 | Early Reverberation Dampening | Controls amount of dampening for the early reverb stage. Actual parameter name is "TapDecay" |
 | Ctrl 6 | Late Reverberation Decay | Adjust the decay time of the late reverberation stage. |
 | SW 1 | Delay Lines | Off = 2 delay lines; On = the current preset's maximum (5, or 4 for "Through the Looking Glass"). |
-| SW 2 | Reverse Routing | Chooses where the SW3 reverse goes. Off = into the reverb (the reversed guitar feeds the wet tail; the forward dry pass-through stays clean via dry-gain cancellation). On = direct mix (a reversed copy of the reverb output is mixed straight into the output). Only audible when SW3 is on. |
-| SW 3 | Reverse Delay | Off = dry + reverb only; On = enables the reverse voice, routed per SW2 (into the reverb tail, or mixed straight into the output). |
-| SW 4 | Bloom | Reverses the order of multi-tap delay gains, resulting in subsequent taps getting louder rather than quietier. |
+| SW 2 | Bloom | Reverses the order of multi-tap delay gains, resulting in subsequent taps getting louder rather than quietier. |
+| SW 3 | Reverse Delay | Off = dry + reverb only; On = enables the reverse voice, routed per SW4 (into the reverb tail, or mixed straight into the output). |
+| SW 4 | Reverse Routing | Chooses where the SW3 reverse goes. Off = into the reverb (the reversed guitar feeds the wet tail; the forward dry pass-through stays clean via dry-gain cancellation). On = direct mix (a reversed copy of the reverb output is mixed straight into the output). Only audible when SW3 is on. |
 | FS 1 | Bypass/Active | Bypass / effect engaged |
 | FS 2 | Cycle Preset | Loads the next available Preset, starts at beginning after the last in the list. These are the same as the original Cloud Seed plugin presets, except for "Through the Looking Glass" |
 | LED 1 | Bypass/Active Indicator |Illuminated when effect is set to Active |

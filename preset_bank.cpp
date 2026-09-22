@@ -72,7 +72,7 @@ const ParamGroup kGroups[] = {
 
 const int kGroupCount = (int)(sizeof(kGroups) / sizeof(kGroups[0]));
 
-// Driven live by SWITCH_1 (line count) and SWITCH_4 (bloom); never from a file.
+// Driven live by SWITCH_1 (line count) and SWITCH_2 (bloom); never from a file.
 bool isRuntimeParameter(int index)
 {
     return index == PARAM(LineCount) || index == PARAM(isReverse);

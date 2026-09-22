@@ -48,7 +48,7 @@ namespace CloudSeed
 		{
 			for (int i = 0; i < (int)Parameter::Count; i++)
 			{
-				// LineCount comes from SWITCH_1 and isReverse from SWITCH_4 at audio
+				// LineCount comes from SWITCH_1 and isReverse from SWITCH_2 at audio
 				// rate; retaining them here reproduces the old behaviour, where those
 				// two slots were deliberately left out of every initFactory* body.
 				if (i == (int)Parameter::LineCount || i == (int)Parameter::isReverse)

@@ -50,7 +50,7 @@ volatile float dummy_trig_value = 0.0f;
 #define SETTINGS_VERSION 2
 
 // Switch to control Bloom (reverse tap decay)
-static const int BLOOM_SWITCH = Terrarium::SWITCH_4;
+static const int BLOOM_SWITCH = Terrarium::SWITCH_2;
 
 // LED blink pattern configuration (defined early for use in preset config)
 struct BlinkPattern {
@@ -462,8 +462,8 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // SWITCH_3: reverse delay on/off
     state.reverseDelayOn = hw.switches[Terrarium::SWITCH_3].Pressed();
 
-    // SWITCH_2: reverse destination (off = into reverb wet path; on = direct output mix)
-    const bool reverseIntoReverb = !hw.switches[Terrarium::SWITCH_2].Pressed();
+    // SWITCH_4: reverse destination (off = into reverb wet path; on = direct output mix)
+    const bool reverseIntoReverb = !hw.switches[Terrarium::SWITCH_4].Pressed();
 
     // Process Bloom/Reverse tap switch
     if (state.prevReverseTaps != reverseTaps) {
@@ -496,7 +496,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
         float makeupGain = OUTPUT_VOLUME_BOOST * (1.0f + compensation * MAKEUP_GAIN_STRENGTH);
 
         if (reverseIntoReverb) {
-            // SWITCH_2 off: reverse the dry guitar and inject it into the reverb input.
+            // SWITCH_4 off: reverse the dry guitar and inject it into the reverb input.
             // The reverb re-emits dryOut*(dry+injectedReverse); we subtract
             // dryOut*injectedReverse at the output so the dry pass-through stays the
             // clean, non-reversed guitar and the reverse is heard only through the wet
@@ -521,7 +521,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
             }
         }
         else {
-            // SWITCH_2 on: today's behavior — reverse records the reverb output and its
+            // SWITCH_4 on: today's behavior — reverse records the reverb output and its
             // reversed copy is mixed straight into the output (reverse audible on its own).
             reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
             reverseDelay.Process(audioOutputBuffer, reverseOutputBuffer, AUDIO_BUFFER_SIZE);

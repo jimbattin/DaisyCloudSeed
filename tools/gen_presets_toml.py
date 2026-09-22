@@ -37,7 +37,7 @@ LED_ON_MS = 150
 LED_OFF_MS = 150
 LED_PAUSE_MS = 5000
 
-# Runtime-controlled: SWITCH_1 drives LineCount, SWITCH_4 drives isReverse.
+# Runtime-controlled: SWITCH_1 drives LineCount, SWITCH_2 drives isReverse.
 RUNTIME_PARAMS = ("LineCount", "isReverse")
 
 # Signal-flow grouping. Must stay in sync with kGroups in preset_bank.cpp.
@@ -90,7 +90,7 @@ FILE_HEADER = '''\
 #   * Every [preset.params.*] group must contain exactly the keys listed for it;
 #     a key in the wrong group, an unknown key, or a missing key is an error.
 #   * LineCount and isReverse must NOT appear: they are driven live by SWITCH_1
-#     (delay line count) and SWITCH_4 (bloom).
+#     (delay line count) and SWITCH_2 (bloom).
 #
 # Every parameter value is normalized 0.0-1.0. The engine maps it to the real
 # range noted in the comments below.

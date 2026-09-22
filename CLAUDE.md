@@ -102,9 +102,9 @@ KNOB_5: Early reverb dampening  -> Parameter::TapDecay              (0.0-1.0)
 KNOB_6: Late reverb decay       -> Parameter::LineDecay             (0.0-1.0)
 
 SWITCH_1: Delay line count (off = 2 lines, on = the preset's max_delay_lines)
-SWITCH_2: Reverse routing (off = reverse into reverb wet path, on = direct output mix; only active with SWITCH_3 on)
-SWITCH_3: Reverse delay on/off (enables the reverse voice; SWITCH_2 selects its destination; see CloudSeed/ReverseDelay.h)
-SWITCH_4: Bloom -> Parameter::isReverse, reverses multitap gain order
+SWITCH_2: Bloom -> Parameter::isReverse, reverses multitap gain order
+SWITCH_3: Reverse delay on/off (enables the reverse voice; SWITCH_4 selects its destination; see CloudSeed/ReverseDelay.h)
+SWITCH_4: Reverse routing (off = reverse into reverb wet path, on = direct output mix; only active with SWITCH_3 on)
 FOOTSWITCH_1: Bypass toggle (persisted to flash)
 FOOTSWITCH_2: Preset cycle (10 presets)
 ```
@@ -135,7 +135,7 @@ All presets allow 5 delay lines except "Through the Looking Glass"
   `max_delay_lines`, and eight `[preset.params.*]` groups holding all 45 file-controlled
   parameters (see the parameter reference in the TOML header)
 - `LineCount` and `isReverse` must NOT appear in the file: they are written at audio rate from
-  SWITCH_1 and SWITCH_4. The parser rejects them
+  SWITCH_1 and SWITCH_2. The parser rejects them
 - Parsed by `ParsePresetBank()` ([preset_bank.cpp](preset_bank.cpp)) into `PresetBank`
   (`count` + `PresetData[16]`); `PresetData::params[]` is indexed by `(int)Parameter`
 - Applied with `CloudSeed::ReverbController::LoadPreset()`
@@ -257,7 +257,7 @@ allocating - the two uses never overlap in time.
 - Main reverb controller
 - Preset application: `LoadPreset(const float* values)` (`:47`) copies a parsed
   `PresetData::params[]` into `parameters[]`, skipping `LineCount`/`isReverse` (written at audio
-  rate by SWITCH_1/SWITCH_4), then re-applies all 47 slots through `SetParameter`. The
+  rate by SWITCH_1/SWITCH_2), then re-applies all 47 slots through `SetParameter`. The
   constructor no longer loads any preset - `main()` parses presets.toml and calls `LoadPreset()`
   before audio starts
 - Single channel: `channelR` and all right-channel buffers are commented out
@@ -454,7 +454,7 @@ Rules the parser enforces (a violation stops boot and blinks both LEDs, so run
   45 parameters total. Group membership is defined by `kGroups` in
   [preset_bank.cpp](preset_bank.cpp) and mirrored by the reference comment at the top of
   presets.toml
-- `LineCount` and `isReverse` must not appear (SWITCH_1 and SWITCH_4 own them)
+- `LineCount` and `isReverse` must not appear (SWITCH_1 and SWITCH_2 own them)
 - `blinks` is 1..20; `max_delay_lines` is 1.0..5.0; the ms fields are 0..60000 and optional
   (defaults 150/150/5000); at most `kMaxPresets` (16) presets
 - Values are normalized 0.0-1.0; the real-unit ranges are listed in the TOML header and
@@ -488,7 +488,7 @@ static const int TotalLineCount = 4;
 
 **File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:451-472`)
 
-Current logic: SWITCH_1 selects the delay-line count (off = 2, on = the preset's `max_delay_lines`); SWITCH_2 selects reverse routing (off = into the reverb, on = direct mix); SWITCH_3 toggles the reverse voice; SWITCH_4 is Bloom.
+Current logic: SWITCH_1 selects the delay-line count (off = 2, on = the preset's `max_delay_lines`); SWITCH_2 is Bloom; SWITCH_3 toggles the reverse voice; SWITCH_4 selects reverse routing (off = into the reverb, on = direct mix).
 
 ```cpp
 // Example: Make switches select exact count instead of additive
@@ -502,7 +502,7 @@ The code uses `.Pressed()` — an 'ON' toggle counts as pressed (`cloudseed.cpp:
 `.Read()`. Any replacement must still apply the per-preset max at `cloudseed.cpp:451-454`,
 or CPU-intensive presets will crackle.
 
-Switch 4 controls a "Bloom" effect which reverses the gain decay on multi-tap delays
+Switch 2 controls a "Bloom" effect which reverses the gain decay on multi-tap delays
 
 ### 6. Adjusting Audio Buffer Size
 
@@ -587,15 +587,15 @@ The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:56-70`;
    `hasChanged()` reports a difference larger than `FLOAT_EPSILON` (`:412-448`)
 4. Select the delay line count from SWITCH_1 (off = 2, on = the preset's `max_delay_lines`,
    read from `gPresets.presets[state.currentPreset]`) before writing `Parameter::LineCount`,
-   then sample SWITCH_3 into `state.reverseDelayOn` and SWITCH_2 into `reverseIntoReverb`
+   then sample SWITCH_3 into `state.reverseDelayOn` and SWITCH_4 into `reverseIntoReverb`
    (off → reverse into the reverb, on → direct mix) (`:451-466`)
-5. Apply Bloom → `Parameter::isReverse` when SWITCH_4 changes (`:468-472`)
+5. Apply Bloom → `Parameter::isReverse` when SWITCH_2 changes (`:468-472`)
 6. Copy the left input channel into the static input buffer (`:480-483`)
-7. Process audio through the SWITCH_2 branch (`:498-540`):
-   - Into-reverb (SWITCH_2 off): reverse the dry input, add `injectedReverse` to the reverb
+7. Process audio through the SWITCH_4 branch (`:498-540`):
+   - Into-reverb (SWITCH_4 off): reverse the dry input, add `injectedReverse` to the reverb
      input, then `reverb->Process(reverbInputBuffer, …)` and capture
      `scaledDryOut = reverb->GetScaledParameter(::Parameter::DryOut)` (`:504-512`)
-   - Direct-mix (SWITCH_2 on): `reverb->Process(audioInputBuffer, …)`, then record the reverb
+   - Direct-mix (SWITCH_4 on): `reverb->Process(audioInputBuffer, …)`, then record the reverb
      output into `reverseDelay` for backward playback (`:526-527`)
 8. Compute the equal-power `makeupGain` once, before the branch (`:491-496`); the output stage below scales by it. The dry/wet mix itself happens inside
    the reverb via `DryOut`/`EarlyOut`/`MainOut`; the callback only scales the result by
