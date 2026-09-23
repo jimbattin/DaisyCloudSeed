@@ -1,7 +1,9 @@
 // Host-side proof that presets.toml parses and yields the expected values.
-// Usage: preset_check <presets.toml>
-// Prints the same dump tools/gen_presets_toml.py writes to
+// Usage: preset_check [--validate] <presets.toml>
+// Without --validate, prints the same dump tools/gen_presets_toml.py writes to
 // build/presets_expected.txt, so the two can be diffed.
+// With --validate, prints nothing but a one-line summary and exits non-zero if
+// the firmware's own parser would reject the file.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,27 +45,82 @@ static char* readFile(const char* path)
     return buffer;
 }
 
+// Mirror of the firmware's boot-time parse arena (TOML_ARENA_SIZE and
+// toml_arena_alloc, cloudseed.cpp:193-204): same size, same 8-byte alignment,
+// no reuse on free. Host pointers are 64-bit, so tomlc99's node allocations are
+// at least as large here as on the 32-bit target: fitting here implies fitting
+// on the pedal.
+static const size_t kArenaSize = 512 * 1024;
+static char         gArena[kArenaSize];
+static size_t       gArenaIndex = 0;
+static size_t       gArenaPeak  = 0;
+
+static void* arenaAlloc(size_t size)
+{
+    const size_t aligned = (size + 7u) & ~(size_t)7u;
+    if (gArenaIndex + aligned > kArenaSize)
+    {
+        fprintf(stderr,
+                "boot parse arena exhausted: needs more than %zu bytes "
+                "(TOML_ARENA_SIZE, cloudseed.cpp)\n",
+                kArenaSize);
+        exit(1);
+    }
+
+    void* ptr = &gArena[gArenaIndex];
+    gArenaIndex += aligned;
+    if (gArenaIndex > gArenaPeak)
+        gArenaPeak = gArenaIndex;
+    return ptr;
+}
+
+static void arenaFree(void*) {}
+
 int main(int argc, char** argv)
 {
-    if (argc != 2)
+    bool        validateOnly = false;
+    const char* path         = NULL;
+
+    for (int i = 1; i < argc; i++)
     {
-        fprintf(stderr, "usage: %s <presets.toml>\n", argv[0]);
+        if (strcmp(argv[i], "--validate") == 0)
+            validateOnly = true;
+        else if (!path)
+            path = argv[i];
+        else
+            path = NULL;
+    }
+
+    if (!path)
+    {
+        fprintf(stderr, "usage: %s [--validate] <presets.toml>\n", argv[0]);
         return 2;
     }
 
-    char* text = readFile(argv[1]);
+    char* text = readFile(path);
     if (!text)
         return 2;
 
-    PresetBank bank;
-    char       err[192];
-    const bool ok = ParsePresetBank(text, bank, err, sizeof err, malloc, free);
+    // Same shape as loadPresetBank(): a scratch copy of the NUL-terminated blob
+    // is the arena's first allocation, because toml_parse() mutates its input.
+    const size_t blobLen = strlen(text) + 1;
+    char*        scratch = (char*)arenaAlloc(blobLen);
+    memcpy(scratch, text, blobLen);
     free(text);
 
-    if (!ok)
+    PresetBank bank;
+    char       err[192];
+    if (!ParsePresetBank(scratch, bank, err, sizeof err, arenaAlloc, arenaFree))
     {
-        fprintf(stderr, "%s\n", err);
+        fprintf(stderr, "%s: %s\n", path, err);
         return 1;
+    }
+
+    if (validateOnly)
+    {
+        printf("%s: %d presets valid, boot arena peak %zu of %zu bytes\n", path,
+               bank.count, gArenaPeak, kArenaSize);
+        return 0;
     }
 
     for (int p = 0; p < bank.count; p++)

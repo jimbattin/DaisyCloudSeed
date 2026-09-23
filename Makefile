@@ -36,22 +36,41 @@ CPPFLAGS += -ffast-math
 C_INCLUDES += -I./third_party/tomlc99 -I.
 ASFLAGS += -Wa,-I,$(CURDIR)
 
-# Re-assemble the embedded blob whenever the preset data changes.
-$(BUILD_DIR)/presets_toml.o: presets.toml
+# Host toolchain for the preset validator (overridable for odd environments).
+HOSTCC  ?= gcc
+HOSTCXX ?= g++
 
-# Host-side proof that presets.toml parses into the values the firmware expects.
-# tools/presets_expected.txt is the golden dump generated from the original
-# hard-coded presets; it is version-controlled because `make clean` wipes build/.
-presets-check: | $(BUILD_DIR)
-	gcc -std=gnu11 -O1 -Ithird_party/tomlc99 -c \
-		-o $(BUILD_DIR)/toml_host.o third_party/tomlc99/toml.c
-	g++ -std=gnu++14 -O1 -I. -Ithird_party/tomlc99 -o $(BUILD_DIR)/preset_check \
+$(BUILD_DIR)/toml_host.o: third_party/tomlc99/toml.c | $(BUILD_DIR)
+	$(HOSTCC) -std=gnu11 -O1 -Ithird_party/tomlc99 -c -o $@ $<
+
+$(BUILD_DIR)/preset_check: tools/preset_check.cpp preset_bank.cpp preset_bank.h \
+		$(BUILD_DIR)/toml_host.o | $(BUILD_DIR)
+	$(HOSTCXX) -std=gnu++14 -O1 -I. -Ithird_party/tomlc99 -o $@ \
 		tools/preset_check.cpp preset_bank.cpp $(BUILD_DIR)/toml_host.o
+
+# Schema gate: presets.toml is validated with the firmware's own parser before
+# it can be embedded. A file that fails here never reaches the pedal, where the
+# only symptom would be presetErrorLoop().
+$(BUILD_DIR)/presets.valid: presets.toml $(BUILD_DIR)/preset_check
+	./$(BUILD_DIR)/preset_check --validate presets.toml
+	@touch $@
+
+presets-validate: $(BUILD_DIR)/presets.valid
+
+# Re-assemble the embedded blob whenever the preset data changes, and only after
+# it has passed validation.
+$(BUILD_DIR)/presets_toml.o: presets.toml $(BUILD_DIR)/presets.valid
+
+# Value-drift regression against the golden dump of the original hard-coded
+# presets. Deliberately NOT part of `make`: editing preset values is expected
+# and must not break the firmware build. tools/presets_expected.txt is
+# version-controlled because `make clean` wipes build/.
+presets-check: $(BUILD_DIR)/presets.valid
 	./$(BUILD_DIR)/preset_check presets.toml > $(BUILD_DIR)/presets_actual.txt
 	diff -u tools/presets_expected.txt $(BUILD_DIR)/presets_actual.txt
 	@echo "presets.toml matches tools/presets_expected.txt"
 
-.PHONY: presets-check
+.PHONY: presets-check presets-validate
 
 libs:
 	$(MAKE) -C CloudSeed clean all

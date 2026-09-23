@@ -54,13 +54,18 @@ timing, the per-preset delay-line cap, and all 45 reverb parameters. The file is
 the firmware image, so changing a preset is:
 ```
 # edit presets.toml, then:
-make presets-check   # validates the file with the same parser the pedal uses
-make
+make                 # validates presets.toml, then builds
 make program-dfu
 ```
-`make presets-check` fails on an unknown or misplaced parameter, a missing group, a bad range,
-or any drift from the original factory values. If a broken file is ever flashed, the pedal
-blinks **both** LEDs together at 5 Hz and stays silent instead of running with junk settings.
+`make` runs the file through the same parser the pedal uses and refuses to build firmware if it
+fails: unknown or misplaced parameters, a missing group, an unknown preset or top-level key, a
+bad range, TOML syntax errors, or a document too large for the boot-time parse arena. So a
+broken preset file can no longer reach the pedal - where the only symptom would be **both**
+LEDs blinking together at 5 Hz with no audio.
+
+`make presets-check` additionally diffs the parsed values against the original factory dump in
+`tools/presets_expected.txt`. It is not part of `make`, because deliberately changing a preset
+value must not break the build.
 
 Preset order is stored in flash: append new `[[preset]]` entries at the end, and bump
 `SETTINGS_VERSION` in `cloudseed.cpp` if you reorder or delete any.

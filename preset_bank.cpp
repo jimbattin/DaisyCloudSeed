@@ -121,6 +121,37 @@ bool readNumber(const toml_table_t* table, const char* key, double& out)
     return false;
 }
 
+// Rejects any key the schema does not define. Covers scalars, arrays and
+// sub-tables: toml_key_in() enumerates them in that order (tomlc99's
+// toml_key_in, third_party/tomlc99/toml.c:1865-1877). `context` is prefixed
+// into the message; pass "" for the document root.
+bool rejectUnknownKeys(const toml_table_t* table, const char* const* allowed,
+                       int allowedCount, const char* context, char* err,
+                       int errLen)
+{
+    const int total = toml_table_nkval(table) + toml_table_narr(table)
+                      + toml_table_ntab(table);
+
+    for (int i = 0; i < total; i++)
+    {
+        const char* key = toml_key_in(table, i);
+        if (!key)
+            continue;
+
+        bool known = false;
+        for (int a = 0; a < allowedCount && !known; a++)
+            known = strcmp(key, allowed[a]) == 0;
+
+        if (!known)
+        {
+            snprintf(err, errLen, "%sunknown key '%s'", context, key);
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool readOptionalMs(const toml_table_t* table, const char* key, int index,
                     uint32_t defaultValue, uint32_t& out, char* err, int errLen)
 {
@@ -151,28 +182,17 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
         return false;
     }
 
-    // Sub-table keys follow the scalar and array keys in toml_key_in() order.
-    const int nkval = toml_table_nkval(params);
-    const int narr  = toml_table_narr(params);
-    const int ntab  = toml_table_ntab(params);
+    // Rejects unknown groups, and also a parameter or array written directly
+    // under [preset.params] instead of inside one of the eight groups.
+    const char* allowedGroups[kGroupCount];
+    for (int g = 0; g < kGroupCount; g++)
+        allowedGroups[g] = kGroups[g].name;
 
-    for (int t = 0; t < ntab; t++)
-    {
-        const char* groupName = toml_key_in(params, nkval + narr + t);
-        if (!groupName)
-            continue;
-
-        bool known = false;
-        for (int g = 0; g < kGroupCount && !known; g++)
-            known = strcmp(groupName, kGroups[g].name) == 0;
-
-        if (!known)
-        {
-            snprintf(err, errLen, "preset %d: unknown group '%s'", index,
-                     groupName);
-            return false;
-        }
-    }
+    char context[48];
+    snprintf(context, sizeof context, "preset %d: [preset.params]: ", index);
+    if (!rejectUnknownKeys(params, allowedGroups, kGroupCount, context, err,
+                           errLen))
+        return false;
 
     for (int i = 0; i < (int)Parameter::Count; i++)
         out.params[i] = 0.0f;
@@ -188,6 +208,16 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
         {
             snprintf(err, errLen, "preset %d: missing [preset.params.%s]", index,
                      kGroups[g].name);
+            return false;
+        }
+
+        // The keyCount walk below only sees scalars, so a nested table or an
+        // array inside a group would otherwise vanish silently.
+        if (toml_table_narr(group) != 0 || toml_table_ntab(group) != 0)
+        {
+            snprintf(err, errLen,
+                     "preset %d: group '%s' must contain only parameter values",
+                     index, kGroups[g].name);
             return false;
         }
 
@@ -254,6 +284,15 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
 bool parsePreset(const toml_table_t* preset, int index, PresetData& out,
                  char* err, int errLen, void (*dealloc)(void*))
 {
+    static const char* const kPresetKeys[] = {
+        "name", "blinks", "led_on_ms", "led_off_ms", "led_pause_ms",
+        "max_delay_lines", "params"};
+
+    char context[32];
+    snprintf(context, sizeof context, "preset %d: ", index);
+    if (!rejectUnknownKeys(preset, kPresetKeys, 7, context, err, errLen))
+        return false;
+
     toml_datum_t name = toml_string_in(preset, "name");
     if (!name.ok)
     {
@@ -323,6 +362,10 @@ bool parseRoot(const toml_table_t* root, PresetBank& bank, char* err, int errLen
                  kMaxPresets);
         return false;
     }
+
+    static const char* const kRootKeys[] = {"preset"};
+    if (!rejectUnknownKeys(root, kRootKeys, 1, "", err, errLen))
+        return false;
 
     for (int i = 0; i < count; i++)
     {

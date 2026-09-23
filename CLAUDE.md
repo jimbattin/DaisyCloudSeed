@@ -150,7 +150,8 @@ All presets allow 5 delay lines except "Through the Looking Glass"
 - `max_delay_lines` is applied in the audio callback (`cloudseed.cpp:484-486`)
 - LED2 blinks continuously to indicate active preset (N blinks = preset N)
 - A parse failure is unrecoverable: `presetErrorLoop()` (`cloudseed.cpp:220`) blinks both LEDs
-  at 5 Hz forever and never starts audio. `make presets-check` prevents shipping such a file
+  at 5 Hz forever and never starts audio. `make` validates presets.toml before embedding it,
+  so a rejected file cannot be built into firmware in the first place
 
 **Boot-time memory**: the parser allocates exclusively from a 512 KB bump arena carved from the
 head of `custom_pool` (`cloudseed.cpp:193-204`), used between `hw.Init()` and
@@ -311,15 +312,36 @@ make
 ### Checking presets
 
 ```bash
-# Parses presets.toml with the same parser the firmware uses and diffs the result
-# against tools/presets_expected.txt (the golden dump of the original hard-coded presets).
+# Schema validation with the firmware's own parser. Runs automatically as part of
+# `make`; this target is for checking a file without building.
+make presets-validate
+
+# Value-drift regression: diffs the parsed values against tools/presets_expected.txt
+# (the golden dump of the original hard-coded presets). Manual only.
 make presets-check
 ```
 
-This builds `build/preset_check` from `tools/preset_check.cpp`, `preset_bank.cpp`, and the
-vendored tomlc99 (compiled as C), runs it on `presets.toml`, and fails the build on any schema
-error or value drift. Run it after editing presets.toml and before flashing - a TOML the parser
-rejects bricks the boot into `presetErrorLoop()`.
+Both build `build/preset_check` from `tools/preset_check.cpp`, `preset_bank.cpp`, and the
+vendored tomlc99 (compiled as C) using `HOSTCC`/`HOSTCXX` (default `gcc`/`g++`).
+
+`make` cannot produce firmware from a presets.toml the parser would reject: the embedded blob
+(`$(BUILD_DIR)/presets_toml.o`) depends on `$(BUILD_DIR)/presets.valid`, whose recipe is
+`preset_check --validate presets.toml` (`Makefile:39-73`). Validation covers TOML syntax,
+missing/unknown/misplaced parameters, unknown preset- and root-level keys, out-of-range
+scalars, and a document too large for the boot parse arena - the host tool allocates through a
+replica of `TOML_ARENA_SIZE` (512 KB, 8-byte aligned, no reuse), so `presets.toml: 10 presets
+valid, boot arena peak 83632 of 524288 bytes` is the same peak the pedal sees. Host pointers
+are 64-bit, so the reported peak over-estimates the 32-bit target: a pass here implies a fit on
+hardware. A near-miss should be fixed by raising `TOML_ARENA_SIZE` (`cloudseed.cpp:193`), not
+by loosening the host check.
+
+`make presets-check` is deliberately **not** part of `make`: editing preset values is expected
+and must not break the firmware build. It only guards against unintended drift from the factory
+values; re-run `tools/gen_presets_toml.py` or update `tools/presets_expected.txt` when a value
+change is intentional.
+
+A file that somehow reaches the pedal broken is unrecoverable at runtime: `presetErrorLoop()`
+(`cloudseed.cpp:220`) blinks both LEDs at 5 Hz forever and never starts audio.
 
 `tools/gen_presets_toml.py` regenerated `presets.toml` and `tools/presets_expected.txt` from the
 old hard-coded `initFactory*` methods. Those methods are gone, so the script now needs
@@ -452,8 +474,8 @@ LowPass        = 0.29
 # ... the remaining seven groups, every key required
 ```
 
-Rules the parser enforces (a violation stops boot and blinks both LEDs, so run
-`make presets-check` first):
+Rules the parser enforces (a violation fails `make` before the blob is embedded; if one were
+ever flashed it would stop boot and blink both LEDs):
 - All eight `[preset.params.*]` groups must be present, each containing exactly its own keys -
   45 parameters total. Group membership is defined by `kGroups` in
   [preset_bank.cpp](preset_bank.cpp) and mirrored by the reference comment at the top of
@@ -464,9 +486,10 @@ Rules the parser enforces (a violation stops boot and blinks both LEDs, so run
 - Values are normalized 0.0-1.0; the real-unit ranges are listed in the TOML header and
   implemented by `ReverbController::GetScaledParameter`
 
-Then rebuild and reflash: `make presets-check && make && make program-dfu`. `NUM_PRESETS` no
-longer exists - the count comes from `gPresets.count` and the modulo cycling adapts
-automatically.
+Then rebuild and reflash: `make && make program-dfu` - validation is part of `make`. Run
+`make presets-check` as well only when the values are meant to match the factory dump.
+`NUM_PRESETS` no longer exists - the count comes from `gPresets.count` and the modulo cycling
+adapts automatically.
 
 **Reordering or deleting presets** invalidates saved settings: bump `SETTINGS_VERSION`
 (`cloudseed.cpp:50`) in the same change so stale flash contents are discarded.
@@ -569,7 +592,7 @@ The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:61-75`;
 
 **Most Common**:
 - [cloudseed.cpp](cloudseed.cpp) - CloudSeed control mapping and logic
-- [presets.toml](presets.toml) - all preset data (parsed at boot; run `make presets-check`)
+- [presets.toml](presets.toml) - all preset data (parsed at boot; validated by `make`)
 
 **Advanced**:
 - [preset_bank.cpp](preset_bank.cpp) - TOML schema, group membership, and validation errors
@@ -726,9 +749,9 @@ bypass toggle (`cloudseed.cpp:405`).
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
   (`libdaisy/core/STM32H750IB_sram.lds:244-251`), which is where `DelayLine`'s `tempBuffer`,
   `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:44-46`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 180,724 B of 480KB (36.77%). Of that, the
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 181,060 B of 480KB (36.84%). Of that, the
   embedded `presets.toml` blob is 29,576 B (`build/presets_toml.o`), tomlc99 is 14,371 B, and
-  `preset_bank.o` is 3,531 B; deleting the ten `initFactory*` bodies gave back most of the
+  `preset_bank.o` is 3,866 B; deleting the ten `initFactory*` bodies gave back most of the
   difference, for a net +24,010 B against the pre-TOML build
 - DTCMRAM: 20,268 B of 128KB (15.46%) — includes the 3,844 B `gPresets` bank;
   RAM_D2_DMA: 16,968 B of 32KB (51.78%)
@@ -780,8 +803,8 @@ Key changes in this fork:
 8. **LED2 blink pattern system** for visual preset indication
 9. **TOML-defined presets**: all preset data lives in [presets.toml](presets.toml), embedded in
    the firmware image with `.incbin` and parsed at boot by a vendored tomlc99 into a static
-   `PresetBank`; `make presets-check` proves the parsed values match the original hard-coded
-   floats bit-for-bit
+   `PresetBank`; `make` rejects a file the parser would fail, and `make presets-check` proves
+   the parsed values still match the original hard-coded floats bit-for-bit
 10. **Performance optimization**: Moved preset switching and flash writes from audio callback to main loop
 11. **Modulo-based preset cycling** for cleaner wraparound logic
 12. **Through the Looking Glass Preset** enabled by adopting a `max_delay_lines` value for each preset
@@ -814,7 +837,8 @@ them here.
 ```bash
 make clean         # Clean previous build
 make libs          # Rebuild libdaisy, DaisySP, and libcloudseed (clean all)
-make presets-check # Validate presets.toml against tools/presets_expected.txt
+make presets-validate # Schema-check presets.toml (also run automatically by `make`)
+make presets-check # Additionally diff presets.toml against tools/presets_expected.txt
 make               # Build CloudSeed
 make program-boot  # One time: flash the Daisy bootloader (BOOT_SRAM prerequisite)
 make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run)
@@ -842,7 +866,7 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 ### Quick Modifications
 1. Control mapping → `cloudseed.cpp:616-621` (knob `Init()` calls)
 2. Parameter ranges → `Init()` calls at `cloudseed.cpp:616-621`
-3. Add/modify presets → `presets.toml`, then `make presets-check`
+3. Add/modify presets → `presets.toml` (`make` validates it; `make presets-check` for drift)
 4. Blink patterns → `blinks` / `led_on_ms` / `led_off_ms` / `led_pause_ms` in `presets.toml`
 5. Switch logic → `cloudseed.cpp:427-428` (SWITCH_3 sample), `cloudseed.cpp:483-501` (delay
    line count, `max_delay_lines` clamp, Bloom), `cloudseed.cpp:451-476` (KNOB_4 dual function)
