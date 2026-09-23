@@ -9,6 +9,19 @@
 static const int kMaxPresets       = 16;
 static const int kMaxPresetNameLen = 32;
 
+static const int kKnobCount = 6;   // knob1..knob6
+static const int kKnobBanks = 2;   // 0 = primary ("_a"), 1 = secondary ("_b")
+
+// What a knob writes to. Param targets index PresetData::params (i.e.
+// (int)Parameter); ReverseDelay is the reverse-delay window length, which is not
+// a reverb parameter.
+enum KnobTargetKind : uint8_t { KnobTarget_Param = 0, KnobTarget_ReverseDelay = 1 };
+
+struct KnobTarget {
+    uint8_t kind;        // KnobTargetKind
+    uint8_t paramIndex;  // valid only when kind == KnobTarget_Param
+};
+
 struct PresetData {
     char     name[kMaxPresetNameLen];
     int      blinks;
@@ -17,6 +30,8 @@ struct PresetData {
     uint32_t pauseAfterMs;
     float    maxDelayLines;
     float    params[(int)Parameter::Count];
+    // [bank][knob]; bank 0 = primary, bank 1 = secondary (both footswitches held)
+    KnobTarget knobMap[kKnobBanks][kKnobCount];
 };
 
 struct PresetBank {

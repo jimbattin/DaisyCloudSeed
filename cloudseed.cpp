@@ -19,6 +19,7 @@
 #include "CloudSeed/AudioLib/MathDefs.h"
 #include "CloudSeed/ReverseDelay.h"
 #include "preset_bank.h"
+#include "knob_bank.h"
 
 using namespace daisy;
 using namespace daisysp;
@@ -34,12 +35,17 @@ constexpr float FLOAT_EPSILON = 1e-6f;
 constexpr int   REVERSE_BUFFER_SIZE = 192000;  // 4s @ 48kHz record buffer (SDRAM);
                                                // >= 2x the 2000ms max window so the
                                                // ReverseDelay size/2 clamp never engages
-constexpr float REVERSE_GRAIN_MS    = 500.0f;  // boot default window; KNOB_4 retunes it
-                                               // while SWITCH_3 is on
-constexpr float REVERSE_TIME_MIN_MS = 20.0f;   // KNOB_4 fully CCW (SWITCH_3 on)
-constexpr float REVERSE_TIME_MAX_MS = 2000.0f; // KNOB_4 fully CW  (SWITCH_3 on)
+constexpr float REVERSE_GRAIN_MS    = 500.0f;  // boot default window; the knob mapped to
+                                               // "reverse.delay" retunes it
+constexpr float REVERSE_TIME_MIN_MS = 20.0f;   // "reverse.delay" knob fully CCW
+constexpr float REVERSE_TIME_MAX_MS = 2000.0f; // "reverse.delay" knob fully CW
 constexpr float REVERSE_LEVEL       = 0.7f;    // output scale of the reversed signal
 constexpr float REVERSE_MIX_SMOOTHING = 0.002f;// per-sample one-pole toward target 0/1
+
+// One-pole coefficient applied to every knob at boot. libdaisy's default slew
+// computes to 1.0 at this callback rate (hid/ctrl.cpp:16 with a 1 kHz update and
+// the 0.002 s default), i.e. no filtering at all; 0.05 is ~20 ms.
+constexpr float KNOB_SMOOTHING_COEFF = 0.05f;
 
 
 // Volatile global variable used to prevent optimization
@@ -82,6 +88,7 @@ extern "C" {
 }
 
 static PresetBank gPresets;
+static KnobBank gKnobs;
 
 // Persistent Settings
 struct Settings {
@@ -102,22 +109,8 @@ struct Settings {
 
 // Global state structure
 struct PedalState {
-    // Parameters
-    ::daisy::Parameter dryOut;
-    ::daisy::Parameter earlyOut;
-    ::daisy::Parameter mainOut;
-    ::daisy::Parameter delayTime;
-    ::daisy::Parameter diffusion;
-    ::daisy::Parameter tapDecay;
-
     // Previous parameter values (for change detection)
-    float prevDryOut;
-    float prevEarlyOut;
-    float prevMainOut;
-    float prevDelayTime;
-    float prevDiffusion;
     int   prevReverseGrainSamples;  // last window length written to reverseDelay
-    float prevTapDecay;
     float prevNumDelayLines;
     bool prevReverseTaps;
 
@@ -133,9 +126,17 @@ struct PedalState {
     bool  reverseDelayOn;  // SWITCH_3 state, sampled each callback
     float reverseMix;      // smoothed 0..1 crossfade for the reverse voice
     float samplesPerMs;    // sampleRate / 1000, precomputed for the reverse-time knob
+    bool secondaryActive;  // both footswitches held -> knob bank 1
+    bool comboLatched;     // a combo happened during this press: suppress both actions
+    bool knobResetPending; // main loop changed the preset; re-snapshot knob positions
     Led led1;
     Led led2;
 };
+
+// knob1..knob6 in presets.toml order -> hw.knob[] indices (Terrarium ADC order)
+static const int kKnobIndex[kKnobCount] = {
+    Terrarium::KNOB_1, Terrarium::KNOB_2, Terrarium::KNOB_3,
+    Terrarium::KNOB_4, Terrarium::KNOB_5, Terrarium::KNOB_6};
 
 // Declare a local daisy_petal for hardware access
 DaisyPetal hw;
@@ -298,6 +299,41 @@ inline bool hasChanged(float prev, float current) {
     return (prev < current - FLOAT_EPSILON) || (prev > current + FLOAT_EPSILON);
 }
 
+// Writes one knob value to its mapped destination.
+static void applyKnobTarget(const KnobTarget& target, float value) {
+    if (target.kind == KnobTarget_ReverseDelay) {
+        // Antilog knob response via the same ValueTables pattern the engine uses for
+        // Parameter::LineDelay (CloudSeed/ReverbController.h:114): min + table * span.
+        // Response3Oct is (8^x - 1) / 7 normalized, so 0.0 -> 20ms, 0.5 -> ~537ms,
+        // 1.0 -> 2000ms.
+        const float reverseMs = REVERSE_TIME_MIN_MS
+            + AudioLib::ValueTables::Get(value, AudioLib::ValueTables::Response3Oct)
+              * (REVERSE_TIME_MAX_MS - REVERSE_TIME_MIN_MS);
+        const int grainSamples = (int)(reverseMs * state.samplesPerMs);
+        if (grainSamples != state.prevReverseGrainSamples) {
+            reverseDelay.SetGrainSamples(grainSamples);
+            state.prevReverseGrainSamples = grainSamples;
+        }
+        return;
+    }
+
+    const ::Parameter param = (::Parameter)target.paramIndex;
+    reverb->SetParameter(param, value);
+
+    // The two input filters are switch-gated and off in most presets, so a knob
+    // mapped to one of them would otherwise be silent. Enabling on first touch
+    // leaves an untouched preset exactly as authored.
+    const float* current = reverb->GetAllParameters();
+    if (param == ::Parameter::HighPass
+        && current[(int)::Parameter::HiPassEnabled] < 0.5f) {
+        reverb->SetParameter(::Parameter::HiPassEnabled, 1.0f);
+    }
+    else if (param == ::Parameter::LowPass
+             && current[(int)::Parameter::LowPassEnabled] < 0.5f) {
+        reverb->SetParameter(::Parameter::LowPassEnabled, 1.0f);
+    }
+}
+
 /*
  * LED blink
  */
@@ -399,85 +435,59 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // Process footswitches
     //
 
-    // (De-)Activate bypass and toggle LED when left footswitch is pressed
-    if (hw.switches[Terrarium::FOOTSWITCH_1].RisingEdge()) {
+    const bool fs1       = hw.switches[Terrarium::FOOTSWITCH_1].Pressed();
+    const bool fs2       = hw.switches[Terrarium::FOOTSWITCH_2].Pressed();
+    const bool secondary = fs1 && fs2;
+
+    // Holding both footswitches is the secondary-knob gesture, not a bypass toggle
+    // and not a preset change, so both actions move to the release edge and are
+    // suppressed for any press that was part of a combo.
+    if (secondary)
+        state.comboLatched = true;
+
+    // (De-)Activate bypass and toggle LED when the left footswitch is released
+    if (hw.switches[Terrarium::FOOTSWITCH_1].FallingEdge() && !state.comboLatched) {
         state.bypass = !state.bypass;
         state.led1.Set(state.bypass ? 0.0f : 1.0f);
         state.triggerBypassSave = true;
     }
 
-    // Cycle available models (actual preset change happens in main loop)
-    if (hw.switches[Terrarium::FOOTSWITCH_2].RisingEdge()) {
+    // Cycle presets (actual preset change happens in main loop)
+    if (hw.switches[Terrarium::FOOTSWITCH_2].FallingEdge() && !state.comboLatched) {
         state.triggerPresetChange = true;
     }
+
+    if (!fs1 && !fs2)
+        state.comboLatched = false;
 
     //
     // Process knobs and toggle switches
     //
 
-    // Process all parameter values
-    const float dryOutValue = state.dryOut.Process();
-    const float earlyOutValue = state.earlyOut.Process();
-    const float mainOutValue = state.mainOut.Process();
-    const float timeValue = state.delayTime.Process();
-    const float diffusionValue = state.diffusion.Process();
-    const float tapDecayValue = state.tapDecay.Process();
     const bool reverseTaps = hw.switches[BLOOM_SWITCH].Pressed();
 
-    // SWITCH_3: reverse delay on/off
+    // SWITCH_3: reverse voice on/off. The reverse window length is a knob_map
+    // target ("reverse.delay"), not a SWITCH_3 overload of KNOB_4.
     state.reverseDelayOn = hw.switches[Terrarium::SWITCH_3].Pressed();
 
-    // Update reverb parameters only when changed
-    if (hasChanged(state.prevDryOut, dryOutValue)) {
-        reverb->SetParameter(::Parameter::DryOut, dryOutValue);
-        state.prevDryOut = dryOutValue;
+    float knobValues[kKnobCount];
+    for (int i = 0; i < kKnobCount; i++)
+        knobValues[i] = hw.knob[kKnobIndex[i]].Value();
+
+    // Any bank or preset transition parks every knob until it is physically moved,
+    // so a knob dialled in one bank never lands on the other bank's target.
+    if (secondary != state.secondaryActive || state.knobResetPending || !gKnobs.primed) {
+        gKnobs.Reset(knobValues);
+        state.secondaryActive  = secondary;
+        state.knobResetPending = false;
     }
 
-    if (hasChanged(state.prevEarlyOut, earlyOutValue)) {
-        reverb->SetParameter(::Parameter::EarlyOut, earlyOutValue);
-        state.prevEarlyOut = earlyOutValue;
-    }
+    const PresetData& activePreset = gPresets.presets[state.currentPreset];
+    const int         bank         = secondary ? 1 : 0;
 
-    if (hasChanged(state.prevMainOut, mainOutValue)) {
-        reverb->SetParameter(::Parameter::MainOut, mainOutValue);
-        state.prevMainOut = mainOutValue;
-    }
-
-    if (hasChanged(state.prevDelayTime, timeValue)) {
-        reverb->SetParameter(::Parameter::LineDecay, timeValue);
-        state.prevDelayTime = timeValue;
-    }
-
-    // KNOB_4 is dual-function. SWITCH_3 off: late diffusion feedback, as always.
-    // SWITCH_3 on: the knob becomes reverse time, and feedback falls back to the
-    // active preset's value from presets.toml.
-    const float feedbackValue = state.reverseDelayOn
-        ? gPresets.presets[state.currentPreset].params[(int)::Parameter::LateDiffusionFeedback]
-        : diffusionValue;
-
-    if (hasChanged(state.prevDiffusion, feedbackValue)) {
-        reverb->SetParameter(::Parameter::LateDiffusionFeedback, feedbackValue);
-        state.prevDiffusion = feedbackValue;
-    }
-
-    if (state.reverseDelayOn) {
-        // Antilog knob response via the same ValueTables pattern the engine uses for
-        // Parameter::LineDelay (CloudSeed/ReverbController.h:114): min + table * span.
-        // Response3Oct is (8^x - 1) / 7 normalized, so 0.0 -> 20ms, 0.5 -> ~537ms,
-        // 1.0 -> 2000ms.
-        const float reverseMs = REVERSE_TIME_MIN_MS
-            + AudioLib::ValueTables::Get(diffusionValue, AudioLib::ValueTables::Response3Oct)
-              * (REVERSE_TIME_MAX_MS - REVERSE_TIME_MIN_MS);
-        const int reverseGrainSamples = (int)(reverseMs * state.samplesPerMs);
-        if (reverseGrainSamples != state.prevReverseGrainSamples) {
-            reverseDelay.SetGrainSamples(reverseGrainSamples);
-            state.prevReverseGrainSamples = reverseGrainSamples;
-        }
-    }
-
-    if (hasChanged(state.prevTapDecay, tapDecayValue)) {
-        reverb->SetParameter(::Parameter::TapDecay, tapDecayValue);
-        state.prevTapDecay = tapDecayValue;
+    for (int i = 0; i < kKnobCount; i++) {
+        if (gKnobs.Update(i, knobValues[i]))
+            applyKnobTarget(activePreset.knobMap[bank][i], knobValues[i]);
     }
 
     // SWITCH_1: off = 2 delay lines, on = the preset's max
@@ -517,8 +527,13 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     if (!state.presetChangeInProgress) {
         const float reverseTarget = state.reverseDelayOn ? 1.0f : 0.0f;
 
-        // Dynamic makeup gain (equal-power dry/wet compensation) — unchanged; depends
-        // only on the knob values, so compute it once before the output stage.
+        // Dynamic makeup gain (equal-power dry/wet compensation). Reads the live
+        // normalized output levels rather than knob positions: with knob_map the
+        // knobs need not be mapped to DryOut/EarlyOut/MainOut at all.
+        const float* outLevels     = reverb->GetAllParameters();
+        const float  dryOutValue   = outLevels[(int)::Parameter::DryOut];
+        const float  earlyOutValue = outLevels[(int)::Parameter::EarlyOut];
+        const float  mainOutValue  = outLevels[(int)::Parameter::MainOut];
         float totalSignal = dryOutValue + earlyOutValue + mainOutValue + FLOAT_EPSILON;
         float wetBalance = (earlyOutValue + mainOutValue) / totalSignal;
         float compensation = sinf(wetBalance * M_PI_2);
@@ -612,22 +627,13 @@ int main(void) {
                       (int)(sampleRate * REVERSE_GRAIN_MS / 1000.0f));
     reverseDelay.ClearBuffers();
 
-    // Initialize parameters
-    state.dryOut.Init(hw.knob[Terrarium::KNOB_1], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
-    state.earlyOut.Init(hw.knob[Terrarium::KNOB_2], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
-    state.mainOut.Init(hw.knob[Terrarium::KNOB_3], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
-    state.diffusion.Init(hw.knob[Terrarium::KNOB_4], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
-    state.tapDecay.Init(hw.knob[Terrarium::KNOB_5], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
-    state.delayTime.Init(hw.knob[Terrarium::KNOB_6], 0.0f, 1.0f, ::daisy::Parameter::LINEAR);
+    // Give the knobs real ADC smoothing: libdaisy's default slew computes to a
+    // pass-through at this callback rate (see hid/ctrl.cpp:16).
+    for (int i = 0; i < kKnobCount; i++)
+        hw.knob[kKnobIndex[i]].SetCoeff(KNOB_SMOOTHING_COEFF);
 
     // Initialize previous parameter values
-    state.prevDryOut = 0.0f;
-    state.prevEarlyOut = 0.0f;
-    state.prevMainOut = 0.0f;
-    state.prevDelayTime = 0.0f;
-    state.prevDiffusion = 0.0f;
     state.prevReverseGrainSamples = 0;
-    state.prevTapDecay = 0.0f;
     state.prevNumDelayLines = 0.0f; // Let the audio callback capture the real value of active lines
     state.prevReverseTaps = false;
 
@@ -641,6 +647,9 @@ int main(void) {
     state.reverseDelayOn = false;
     state.reverseMix = 0.0f;
     state.samplesPerMs = sampleRate / 1000.0f;
+    state.secondaryActive = false;
+    state.comboLatched = false;
+    state.knobResetPending = false;
 
     // Initialize persistent storage with default settings
     Settings defaultSettings = {
@@ -672,6 +681,9 @@ int main(void) {
             // while buffers are being cleared/modified
             state.presetChangeInProgress = true;
 
+            // Park the knobs before the load so no callback during it can push a
+            // stale position into the incoming preset.
+            state.knobResetPending = true;
             cyclePreset();
             saveSettings();
             startBlinkSequence(getPresetBlinkPattern(state.currentPreset));

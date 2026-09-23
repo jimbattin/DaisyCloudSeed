@@ -281,16 +281,141 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
     return true;
 }
 
+const char* const kKnobKeys[kKnobBanks][kKnobCount] = {
+    {"knob1_a", "knob2_a", "knob3_a", "knob4_a", "knob5_a", "knob6_a"},
+    {"knob1_b", "knob2_b", "knob3_b", "knob4_b", "knob5_b", "knob6_b"}};
+
+// Resolves "group.Param" (or the literal "reverse.delay") into a KnobTarget.
+// `key` is the knobN_x key name, used only for error messages.
+bool parseKnobTarget(const char* text, const char* key, int index,
+                     KnobTarget& out, char* err, int errLen)
+{
+    const char* dot = strchr(text, '.');
+    if (!dot || dot == text || dot[1] == '\0')
+    {
+        snprintf(err, errLen,
+                 "preset %d: knob_map: %s: '%s' must be \"group.Parameter\"",
+                 index, key, text);
+        return false;
+    }
+
+    const size_t groupLen = (size_t)(dot - text);
+    const char*  param    = dot + 1;
+
+    if (groupLen == 7 && strncmp(text, "reverse", 7) == 0)
+    {
+        if (strcmp(param, "delay") != 0)
+        {
+            snprintf(err, errLen,
+                     "preset %d: knob_map: %s: 'reverse' has only 'delay'",
+                     index, key);
+            return false;
+        }
+        out.kind       = KnobTarget_ReverseDelay;
+        out.paramIndex = 0;
+        return true;
+    }
+
+    int group = -1;
+    for (int g = 0; g < kGroupCount; g++)
+    {
+        if (strlen(kGroups[g].name) == groupLen
+            && strncmp(text, kGroups[g].name, groupLen) == 0)
+        {
+            group = g;
+            break;
+        }
+    }
+    if (group < 0)
+    {
+        snprintf(err, errLen, "preset %d: knob_map: %s: unknown group in '%s'",
+                 index, key, text);
+        return false;
+    }
+
+    const int paramIndex = findParameter(param);
+    if (paramIndex < 0)
+    {
+        snprintf(err, errLen, "preset %d: knob_map: %s: unknown parameter '%s'",
+                 index, key, param);
+        return false;
+    }
+    if (isRuntimeParameter(paramIndex))
+    {
+        snprintf(err, errLen,
+                 "preset %d: knob_map: %s: '%s' is runtime-controlled and "
+                 "cannot be mapped",
+                 index, key, param);
+        return false;
+    }
+    if (groupOfParameter(paramIndex) != group)
+    {
+        snprintf(err, errLen,
+                 "preset %d: knob_map: %s: '%s' is not in group '%s'", index,
+                 key, param, kGroups[group].name);
+        return false;
+    }
+
+    out.kind       = KnobTarget_Param;
+    out.paramIndex = (uint8_t)paramIndex;
+    return true;
+}
+
+bool parseKnobMap(const toml_table_t* preset, int index, PresetData& out,
+                  char* err, int errLen, void (*dealloc)(void*))
+{
+    const toml_table_t* map = toml_table_in(preset, "knob_map");
+    if (!map)
+    {
+        snprintf(err, errLen, "preset %d: missing [preset.knob_map]", index);
+        return false;
+    }
+
+    const char* allowed[kKnobBanks * kKnobCount];
+    for (int b = 0; b < kKnobBanks; b++)
+        for (int k = 0; k < kKnobCount; k++)
+            allowed[b * kKnobCount + k] = kKnobKeys[b][k];
+
+    char context[48];
+    snprintf(context, sizeof context, "preset %d: [preset.knob_map]: ", index);
+    if (!rejectUnknownKeys(map, allowed, kKnobBanks * kKnobCount, context, err,
+                           errLen))
+        return false;
+
+    for (int b = 0; b < kKnobBanks; b++)
+    {
+        for (int k = 0; k < kKnobCount; k++)
+        {
+            toml_datum_t value = toml_string_in(map, kKnobKeys[b][k]);
+            if (!value.ok)
+            {
+                snprintf(err, errLen,
+                         "preset %d: knob_map: missing or non-string '%s'",
+                         index, kKnobKeys[b][k]);
+                return false;
+            }
+
+            const bool ok = parseKnobTarget(value.u.s, kKnobKeys[b][k], index,
+                                            out.knobMap[b][k], err, errLen);
+            dealloc(value.u.s);
+            if (!ok)
+                return false;
+        }
+    }
+
+    return true;
+}
+
 bool parsePreset(const toml_table_t* preset, int index, PresetData& out,
                  char* err, int errLen, void (*dealloc)(void*))
 {
     static const char* const kPresetKeys[] = {
         "name", "blinks", "led_on_ms", "led_off_ms", "led_pause_ms",
-        "max_delay_lines", "params"};
+        "max_delay_lines", "params", "knob_map"};
 
     char context[32];
     snprintf(context, sizeof context, "preset %d: ", index);
-    if (!rejectUnknownKeys(preset, kPresetKeys, 7, context, err, errLen))
+    if (!rejectUnknownKeys(preset, kPresetKeys, 8, context, err, errLen))
         return false;
 
     toml_datum_t name = toml_string_in(preset, "name");
@@ -342,7 +467,10 @@ bool parsePreset(const toml_table_t* preset, int index, PresetData& out,
     }
     out.maxDelayLines = (float)maxDelayLines;
 
-    return parseParams(preset, index, out, err, errLen);
+    if (!parseParams(preset, index, out, err, errLen))
+        return false;
+
+    return parseKnobMap(preset, index, out, err, errLen, dealloc);
 }
 
 bool parseRoot(const toml_table_t* root, PresetBank& bank, char* err, int errLen,

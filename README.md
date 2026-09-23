@@ -4,10 +4,12 @@ This is a fork from https://github.com/optilude/DaisyCloudSeed a fork that impro
 This fork extends those capabilities and adds a few extras:
 
 - Switch remap: SW1 selects delay-line count (2 vs. the preset maximum), SW3 engages a
-  classic Reverse Delay (with Ctrl 4 becoming its 20 ms - 2 s time control), SW4 routes that
-  reverse (off = into the reverb's wet tail, on = straight into the output mix), and SW2 keeps
-  the "Bloom" effect, similar to a "reverse reverb" (Bloom reverses the order of tap gains.
-  Has no effect on patches with a single tap.)
+  classic Reverse Delay, SW4 routes that reverse (off = into the reverb's wet tail, on =
+  straight into the output mix), and SW2 keeps the "Bloom" effect, similar to a "reverse
+  reverb" (Bloom reverses the order of tap gains. Has no effect on patches with a single tap.)
+- Per-preset knob mapping: each preset's `[preset.knob_map]` in
+  [presets.toml](presets.toml) assigns all six knobs a primary function and a **secondary**
+  function reached by holding **both footswitches** down
 - More program storage (Moved the application to SRAM)
 - Wider range of preset support offered by placing a limit on the number of delay lines for each preset
 - *Through the Looking Glass* is available as preset 9 (Delay lines capped at 4 for this one only)
@@ -70,6 +72,32 @@ value must not break the build.
 Preset order is stored in flash: append new `[[preset]]` entries at the end, and bump
 `SETTINGS_VERSION` in `cloudseed.cpp` if you reorder or delete any.
 
+## Knob mapping
+
+Every preset carries a `[preset.knob_map]` table naming what each knob does:
+
+```toml
+[preset.knob_map]
+knob1_a = "output.DryOut"        # primary: knob 1 normally
+...
+knob1_b = "input.PreDelay"       # secondary: knob 1 with both footswitches held
+knob6_b = "reverse.delay"        # the reverse-delay window length
+```
+
+Each value is a quoted `"group.Parameter"` naming a parameter from that preset's own
+`[preset.params.<group>]` section, or the pseudo-target `"reverse.delay"`. All twelve keys are
+required and `make` rejects an unknown knob key, an unknown group or parameter, a parameter
+that lives in a different group, and `LineCount`/`isReverse` (those belong to SW1/SW2).
+
+A knob only starts controlling its target after it is **physically moved**: switching banks,
+switching presets, and power-up all park the knobs, so a knob dialled in one bank never slams
+the other bank's parameter when you let go of the footswitches. A consequence is that a freshly
+loaded preset sounds exactly as authored until you touch a knob.
+
+`input.HighPass` and `input.LowPass` switch their filter on the first time their knob is
+turned; every other gated parameter (the shelves, the in-loop cutoff, the diffusers) must be
+enabled in `[preset.params.*]` to be audible.
+
 # Control
 
 | Control | Description | Comment |
@@ -77,15 +105,16 @@ Preset order is stored in flash: append new `[[preset]]` entries at the end, and
 | Ctrl 1 | Dry Level | Adjusts the Dry level out |
 | Ctrl 2 | Early Reverberation Level | Adjusts the Early Reverb stage output.  |
 | Ctrl 3 | Late Reverberation Level | Adjusts the Late Reverb stage output |
-| Ctrl 4 | Late Reverberation Feedback **/ Reverse Time** | With SW3 off: adjusts amount of signal fed back through the delay line. With SW3 on: sets the reverse window from 20 ms (fully CCW) to 2 s (fully CW), antilog (~537 ms at centre), and the feedback falls back to the active preset's value from `presets.toml`. |
+| Ctrl 4 | Late Reverberation Feedback | Adjusts amount of signal fed back through the late diffusion allpass chain. |
 | Ctrl 5 | Early Reverberation Dampening | Controls amount of dampening for the early reverb stage. Actual parameter name is "TapDecay" |
 | Ctrl 6 | Late Reverberation Decay | Adjust the decay time of the late reverberation stage. |
 | SW 1 | Delay Lines | Off = 2 delay lines; On = the current preset's maximum (5, or 4 for "Through the Looking Glass"). |
 | SW 2 | Bloom | Reverses the order of multi-tap delay gains, resulting in subsequent taps getting louder rather than quietier. |
-| SW 3 | Reverse Delay | Off = dry + reverb only; On = enables the reverse voice, routed per SW4 (into the reverb tail, or mixed straight into the output), with Ctrl 4 setting its length. |
+| SW 3 | Reverse Delay | Off = dry + reverb only; On = enables the reverse voice, routed per SW4 (into the reverb tail, or mixed straight into the output). Its window length is the knob mapped to `reverse.delay` (Ctrl 6 secondary by default). |
 | SW 4 | Reverse Routing | Chooses where the SW3 reverse goes. Off = into the reverb (the reversed guitar feeds the wet tail; the forward dry pass-through stays clean via dry-gain cancellation). On = direct mix (a reversed copy of the reverb output is mixed straight into the output). Only audible when SW3 is on. |
-| FS 1 | Bypass/Active | Bypass / effect engaged |
-| FS 2 | Cycle Preset | Loads the next available Preset, starts at beginning after the last in the list. These are the same as the original Cloud Seed plugin presets, except for "Through the Looking Glass" |
+| FS 1 | Bypass/Active | Bypass / effect engaged. Acts on **release**, so that holding both footswitches is a separate gesture. |
+| FS 2 | Cycle Preset | Loads the next available Preset, starts at beginning after the last in the list. Acts on **release**. These are the same as the original Cloud Seed plugin presets, except for "Through the Looking Glass" |
+| FS 1 + FS 2 | Secondary knob bank | While both are held, every knob controls its `knobN_b` target instead of `knobN_a`. Neither bypass nor preset cycling fires for that press. |
 | LED 1 | Bypass/Active Indicator |Illuminated when effect is set to Active |
 | LED 2 | Preset indicator | Number of flashes = current preset number |
 | Audio In 1 | Audio input | Mono only for Terrarium |

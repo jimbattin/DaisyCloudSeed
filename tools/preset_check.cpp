@@ -1,9 +1,10 @@
 // Host-side proof that presets.toml parses and yields the expected values.
-// Usage: preset_check [--validate] <presets.toml>
-// Without --validate, prints the same dump tools/gen_presets_toml.py writes to
+// Usage: preset_check [--validate] [--print-knob-map] <presets.toml>
+// Without a flag, prints the same dump tools/gen_presets_toml.py writes to
 // build/presets_expected.txt, so the two can be diffed.
 // With --validate, prints nothing but a one-line summary and exits non-zero if
 // the firmware's own parser would reject the file.
+// With --print-knob-map, prints the resolved knob assignments instead.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,12 +80,15 @@ static void arenaFree(void*) {}
 int main(int argc, char** argv)
 {
     bool        validateOnly = false;
+    bool        printKnobMap = false;
     const char* path         = NULL;
 
     for (int i = 1; i < argc; i++)
     {
         if (strcmp(argv[i], "--validate") == 0)
             validateOnly = true;
+        else if (strcmp(argv[i], "--print-knob-map") == 0)
+            printKnobMap = true;
         else if (!path)
             path = argv[i];
         else
@@ -93,7 +97,8 @@ int main(int argc, char** argv)
 
     if (!path)
     {
-        fprintf(stderr, "usage: %s [--validate] <presets.toml>\n", argv[0]);
+        fprintf(stderr, "usage: %s [--validate] [--print-knob-map] <presets.toml>\n",
+                argv[0]);
         return 2;
     }
 
@@ -114,6 +119,26 @@ int main(int argc, char** argv)
     {
         fprintf(stderr, "%s: %s\n", path, err);
         return 1;
+    }
+
+    if (printKnobMap)
+    {
+        static const char* const kBankSuffix[2] = {"a", "b"};
+        for (int p = 0; p < bank.count; p++)
+        {
+            for (int b = 0; b < kKnobBanks; b++)
+            {
+                for (int k = 0; k < kKnobCount; k++)
+                {
+                    const KnobTarget& t = bank.presets[p].knobMap[b][k];
+                    printf("preset %d knob%d_%s = %s\n", p, k + 1, kBankSuffix[b],
+                           t.kind == KnobTarget_ReverseDelay
+                               ? "reverse.delay"
+                               : kParameterNames[t.paramIndex]);
+                }
+            }
+        }
+        return 0;
     }
 
     if (validateOnly)

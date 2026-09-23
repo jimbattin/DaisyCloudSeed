@@ -11,6 +11,14 @@
 #     a key in the wrong group, an unknown key, or a missing key is an error.
 #   * LineCount and isReverse must NOT appear: they are driven live by SWITCH_1
 #     (delay line count) and SWITCH_2 (bloom).
+#   * Every preset needs a [preset.knob_map] with all twelve knobN_a / knobN_b
+#     keys. Each value is a quoted "group.Parameter" naming a parameter from that
+#     preset's own [preset.params.<group>] section, or "reverse.delay" for the
+#     reverse-delay window length. Secondary (_b) functions are reachable by
+#     holding BOTH footswitches down while turning the knob.
+#   * input.HighPass / input.LowPass are enabled automatically the first time
+#     their knob is turned; every other switch-gated parameter (shelves, cutoff,
+#     the diffusers) must be enabled in [preset.params.*] to be audible.
 #
 # Every parameter value is normalized 0.0-1.0. The engine maps it to the real
 # range noted in the comments below.
@@ -88,6 +96,22 @@ led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
 max_delay_lines = 5.0
+
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while BOTH footswitches are held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
 
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
@@ -167,6 +191,22 @@ led_off_ms = 150
 led_pause_ms = 5000
 max_delay_lines = 5.0
 
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while BOTH footswitches are held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.0
@@ -244,6 +284,22 @@ led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
 max_delay_lines = 5.0
+
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while BOTH footswitches are held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
 
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
@@ -323,6 +379,22 @@ led_off_ms = 150
 led_pause_ms = 5000
 max_delay_lines = 5.0
 
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while BOTH footswitches are held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.0
@@ -400,6 +472,22 @@ led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
 max_delay_lines = 5.0
+
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while BOTH footswitches are held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
 
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
@@ -479,6 +567,22 @@ led_off_ms = 150
 led_pause_ms = 5000
 max_delay_lines = 5.0
 
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while BOTH footswitches are held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.32499998807907104
@@ -556,6 +660,22 @@ led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
 max_delay_lines = 5.0
+
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while BOTH footswitches are held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
 
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
@@ -635,6 +755,22 @@ led_off_ms = 150
 led_pause_ms = 5000
 max_delay_lines = 5.0
 
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while BOTH footswitches are held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0
@@ -712,6 +848,22 @@ led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
 max_delay_lines = 4.0
+
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while BOTH footswitches are held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
 
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
@@ -791,6 +943,22 @@ led_off_ms = 150
 led_pause_ms = 5000
 max_delay_lines = 5.0
 
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while BOTH footswitches are held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.0
@@ -820,7 +988,7 @@ EarlyDiffusionModRate   = 0.2466999888420105
 [preset.params.late]
 LineDelay     = 0.9100002646446228
 LineDecay     = 0.6345999836921692
-LineModAmount = 0.2719999849796295
+LineModAmount = 0.1719999849796295
 LineModRate   = 0.2292999923229218
 LateStageTap  = 1.0
 Interpolation = 1.0
@@ -831,7 +999,7 @@ LateDiffusionEnabled   = 1.0
 LateDiffusionStages    = 1.0
 LateDiffusionDelay     = 0.239999994635582
 LateDiffusionFeedback  = 0.8506999611854553
-LateDiffusionModAmount = 0.1467999964952469
+LateDiffusionModAmount = 0.1067999964952469
 LateDiffusionModRate   = 0.1666999906301498
 
 # Late EQ: shelves and low-pass applied inside each line's feedback path.
