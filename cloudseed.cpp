@@ -31,8 +31,13 @@ constexpr float MAKEUP_GAIN_STRENGTH = 0.8f;  // Max additional gain when fully 
 constexpr float FLOAT_EPSILON = 1e-6f;
 
 // Reverse delay stage (records the reverb output and plays it back backwards)
-constexpr int   REVERSE_BUFFER_SIZE = 48000;   // 1s @ 48kHz record buffer (SDRAM)
-constexpr float REVERSE_GRAIN_MS    = 500.0f;  // reverse window length
+constexpr int   REVERSE_BUFFER_SIZE = 192000;  // 4s @ 48kHz record buffer (SDRAM);
+                                               // >= 2x the 2000ms max window so the
+                                               // ReverseDelay size/2 clamp never engages
+constexpr float REVERSE_GRAIN_MS    = 500.0f;  // boot default window; KNOB_4 retunes it
+                                               // while SWITCH_3 is on
+constexpr float REVERSE_TIME_MIN_MS = 20.0f;   // KNOB_4 fully CCW (SWITCH_3 on)
+constexpr float REVERSE_TIME_MAX_MS = 2000.0f; // KNOB_4 fully CW  (SWITCH_3 on)
 constexpr float REVERSE_LEVEL       = 0.7f;    // output scale of the reversed signal
 constexpr float REVERSE_MIX_SMOOTHING = 0.002f;// per-sample one-pole toward target 0/1
 
@@ -111,6 +116,7 @@ struct PedalState {
     float prevMainOut;
     float prevDelayTime;
     float prevDiffusion;
+    int   prevReverseGrainSamples;  // last window length written to reverseDelay
     float prevTapDecay;
     float prevNumDelayLines;
     bool prevReverseTaps;
@@ -126,6 +132,7 @@ struct PedalState {
     bool reverseTaps;
     bool  reverseDelayOn;  // SWITCH_3 state, sampled each callback
     float reverseMix;      // smoothed 0..1 crossfade for the reverse voice
+    float samplesPerMs;    // sampleRate / 1000, precomputed for the reverse-time knob
     Led led1;
     Led led2;
 };
@@ -417,6 +424,9 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     const float tapDecayValue = state.tapDecay.Process();
     const bool reverseTaps = hw.switches[BLOOM_SWITCH].Pressed();
 
+    // SWITCH_3: reverse delay on/off
+    state.reverseDelayOn = hw.switches[Terrarium::SWITCH_3].Pressed();
+
     // Update reverb parameters only when changed
     if (hasChanged(state.prevDryOut, dryOutValue)) {
         reverb->SetParameter(::Parameter::DryOut, dryOutValue);
@@ -438,9 +448,31 @@ static void audioCallback(AudioHandle::InputBuffer  in,
         state.prevDelayTime = timeValue;
     }
 
-    if (hasChanged(state.prevDiffusion, diffusionValue)) {
-        reverb->SetParameter(::Parameter::LateDiffusionFeedback, diffusionValue);
-        state.prevDiffusion = diffusionValue;
+    // KNOB_4 is dual-function. SWITCH_3 off: late diffusion feedback, as always.
+    // SWITCH_3 on: the knob becomes reverse time, and feedback falls back to the
+    // active preset's value from presets.toml.
+    const float feedbackValue = state.reverseDelayOn
+        ? gPresets.presets[state.currentPreset].params[(int)::Parameter::LateDiffusionFeedback]
+        : diffusionValue;
+
+    if (hasChanged(state.prevDiffusion, feedbackValue)) {
+        reverb->SetParameter(::Parameter::LateDiffusionFeedback, feedbackValue);
+        state.prevDiffusion = feedbackValue;
+    }
+
+    if (state.reverseDelayOn) {
+        // Antilog knob response via the same ValueTables pattern the engine uses for
+        // Parameter::LineDelay (CloudSeed/ReverbController.h:114): min + table * span.
+        // Response3Oct is (8^x - 1) / 7 normalized, so 0.0 -> 20ms, 0.5 -> ~537ms,
+        // 1.0 -> 2000ms.
+        const float reverseMs = REVERSE_TIME_MIN_MS
+            + AudioLib::ValueTables::Get(diffusionValue, AudioLib::ValueTables::Response3Oct)
+              * (REVERSE_TIME_MAX_MS - REVERSE_TIME_MIN_MS);
+        const int reverseGrainSamples = (int)(reverseMs * state.samplesPerMs);
+        if (reverseGrainSamples != state.prevReverseGrainSamples) {
+            reverseDelay.SetGrainSamples(reverseGrainSamples);
+            state.prevReverseGrainSamples = reverseGrainSamples;
+        }
     }
 
     if (hasChanged(state.prevTapDecay, tapDecayValue)) {
@@ -458,9 +490,6 @@ static void audioCallback(AudioHandle::InputBuffer  in,
         reverb->SetParameter(::Parameter::LineCount, numDelayLines);
         state.prevNumDelayLines = numDelayLines;
     }
-
-    // SWITCH_3: reverse delay on/off
-    state.reverseDelayOn = hw.switches[Terrarium::SWITCH_3].Pressed();
 
     // SWITCH_4: reverse destination (off = into reverb wet path; on = direct output mix)
     const bool reverseIntoReverb = !hw.switches[Terrarium::SWITCH_4].Pressed();
@@ -597,6 +626,7 @@ int main(void) {
     state.prevMainOut = 0.0f;
     state.prevDelayTime = 0.0f;
     state.prevDiffusion = 0.0f;
+    state.prevReverseGrainSamples = 0;
     state.prevTapDecay = 0.0f;
     state.prevNumDelayLines = 0.0f; // Let the audio callback capture the real value of active lines
     state.prevReverseTaps = false;
@@ -610,6 +640,7 @@ int main(void) {
     state.presetChangeInProgress = false;
     state.reverseDelayOn = false;
     state.reverseMix = 0.0f;
+    state.samplesPerMs = sampleRate / 1000.0f;
 
     // Initialize persistent storage with default settings
     Settings defaultSettings = {

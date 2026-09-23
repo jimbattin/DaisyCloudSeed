@@ -4,9 +4,10 @@ This is a fork from https://github.com/optilude/DaisyCloudSeed a fork that impro
 This fork extends those capabilities and adds a few extras:
 
 - Switch remap: SW1 selects delay-line count (2 vs. the preset maximum), SW3 engages a
-  classic Reverse Delay, SW4 routes that reverse (off = into the reverb's wet tail, on =
-  straight into the output mix), and SW2 keeps the "Bloom" effect, similar to a "reverse
-  reverb" (Bloom reverses the order of tap gains. Has no effect on patches with a single tap.)
+  classic Reverse Delay (with Ctrl 4 becoming its 20 ms - 2 s time control), SW4 routes that
+  reverse (off = into the reverb's wet tail, on = straight into the output mix), and SW2 keeps
+  the "Bloom" effect, similar to a "reverse reverb" (Bloom reverses the order of tap gains.
+  Has no effect on patches with a single tap.)
 - More program storage (Moved the application to SRAM)
 - Wider range of preset support offered by placing a limit on the number of delay lines for each preset
 - *Through the Looking Glass* is available as preset 9 (Delay lines capped at 4 for this one only)
@@ -71,12 +72,12 @@ Preset order is stored in flash: append new `[[preset]]` entries at the end, and
 | Ctrl 1 | Dry Level | Adjusts the Dry level out |
 | Ctrl 2 | Early Reverberation Level | Adjusts the Early Reverb stage output.  |
 | Ctrl 3 | Late Reverberation Level | Adjusts the Late Reverb stage output |
-| Ctrl 4 | Late Reverberation Feedback | Adjusts amount of signal fed back through the delay line. |
+| Ctrl 4 | Late Reverberation Feedback **/ Reverse Time** | With SW3 off: adjusts amount of signal fed back through the delay line. With SW3 on: sets the reverse window from 20 ms (fully CCW) to 2 s (fully CW), antilog (~537 ms at centre), and the feedback falls back to the active preset's value from `presets.toml`. |
 | Ctrl 5 | Early Reverberation Dampening | Controls amount of dampening for the early reverb stage. Actual parameter name is "TapDecay" |
 | Ctrl 6 | Late Reverberation Decay | Adjust the decay time of the late reverberation stage. |
 | SW 1 | Delay Lines | Off = 2 delay lines; On = the current preset's maximum (5, or 4 for "Through the Looking Glass"). |
 | SW 2 | Bloom | Reverses the order of multi-tap delay gains, resulting in subsequent taps getting louder rather than quietier. |
-| SW 3 | Reverse Delay | Off = dry + reverb only; On = enables the reverse voice, routed per SW4 (into the reverb tail, or mixed straight into the output). |
+| SW 3 | Reverse Delay | Off = dry + reverb only; On = enables the reverse voice, routed per SW4 (into the reverb tail, or mixed straight into the output), with Ctrl 4 setting its length. |
 | SW 4 | Reverse Routing | Chooses where the SW3 reverse goes. Off = into the reverb (the reversed guitar feeds the wet tail; the forward dry pass-through stays clean via dry-gain cancellation). On = direct mix (a reversed copy of the reverb output is mixed straight into the output). Only audible when SW3 is on. |
 | FS 1 | Bypass/Active | Bypass / effect engaged |
 | FS 2 | Cycle Preset | Loads the next available Preset, starts at beginning after the last in the list. These are the same as the original Cloud Seed plugin presets, except for "Through the Looking Glass" |

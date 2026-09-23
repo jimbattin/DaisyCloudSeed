@@ -52,16 +52,35 @@ namespace CloudSeed
         {
             buffer = buf;
             size = bufferSamples;
+            W = 0;                 // force SetGrainSamples() below to apply
+            SetGrainSamples(grainSamples);
+            ClearBuffers();
+        }
+
+        // Retunes the reverse window in place. Safe to call from the audio callback
+        // between Process() blocks: the recording and writeIndex are untouched, so
+        // only the playback window length changes. Grains already past the new
+        // window end are retired here, which keeps Window() inside its [0, W) domain
+        // (a stale phase >= W would make the sin() fade argument negative and jump
+        // the grain gain). hopCounter is clamped so a shrink cannot leave a gap
+        // longer than the new hop before the next grain launches.
+        void SetGrainSamples(int grainSamples)
+        {
             int g = grainSamples;
-            if (g > bufferSamples / 2) g = bufferSamples / 2;
+            if (g > size / 2) g = size / 2;
             if (g < 2) g = 2;
+            if (g == W) return;
+
             W = g;
             Xf = W / 8;
             if (Xf < 1) Xf = 1;
             if (Xf > W / 2) Xf = W / 2;
             hop = W - Xf;
             if (hop < 1) hop = 1;
-            ClearBuffers();
+
+            if (hopCounter > hop) hopCounter = hop;
+            for (int i = 0; i < MaxGrains; i++)
+                if (grains[i].phase >= W) grains[i].active = false;
         }
 
         void ClearBuffers()
