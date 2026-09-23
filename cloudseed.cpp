@@ -126,6 +126,18 @@ struct PedalState {
     bool  reverseDelayOn;  // SWITCH_3 state, sampled each callback
     float reverseMix;      // smoothed 0..1 crossfade for the reverse voice
     float samplesPerMs;    // sampleRate / 1000, precomputed for the reverse-time knob
+
+    // Active preset configuration, copied by loadPreset(). The audio callback and
+    // the blink state machine read these, never gPresets.
+    KnobTarget   knobMap[kKnobBanks][kKnobCount];
+    float        maxDelayLines;
+    BlinkPattern blinkPattern;
+
+    // Derived from DryOut/EarlyOut/MainOut; recomputed only when those change.
+    bool  outputLevelsDirty;
+    float makeupGain;
+    float scaledDryOut;
+
     bool secondaryActive;  // both footswitches held -> knob bank 1
     bool comboLatched;     // a combo happened during this press: suppress both actions
     bool knobResetPending; // main loop changed the preset; re-snapshot knob positions
@@ -239,9 +251,18 @@ void loadPreset(int presetIndex) {
         presetIndex = 0;  // Default to first preset if invalid
     }
 
-    reverb->ClearBuffers();
+    const PresetData& p = gPresets.presets[presetIndex];
 
-    reverb->LoadPreset(gPresets.presets[presetIndex].params);
+    reverb->ClearBuffers();
+    reverb->LoadPreset(p.params);
+
+    // Apply the preset's non-parameter configuration to pedal state. This is the
+    // only place gPresets is read after boot; the audio callback uses the copies.
+    memcpy(state.knobMap, p.knobMap, sizeof state.knobMap);
+    state.maxDelayLines = p.maxDelayLines;
+    state.blinkPattern  = BlinkPattern{p.blinks, p.onDurationMs, p.offDurationMs,
+                                       p.pauseAfterMs};
+    state.outputLevelsDirty = true;
 }
 
 /*
@@ -320,33 +341,32 @@ static void applyKnobTarget(const KnobTarget& target, float value) {
     const ::Parameter param = (::Parameter)target.paramIndex;
     reverb->SetParameter(param, value);
 
+    switch (param) {
     // The two input filters are switch-gated and off in most presets, so a knob
     // mapped to one of them would otherwise be silent. Enabling on first touch
     // leaves an untouched preset exactly as authored.
-    const float* current = reverb->GetAllParameters();
-    if (param == ::Parameter::HighPass
-        && current[(int)::Parameter::HiPassEnabled] < 0.5f) {
-        reverb->SetParameter(::Parameter::HiPassEnabled, 1.0f);
-    }
-    else if (param == ::Parameter::LowPass
-             && current[(int)::Parameter::LowPassEnabled] < 0.5f) {
-        reverb->SetParameter(::Parameter::LowPassEnabled, 1.0f);
+    case ::Parameter::HighPass:
+        if (reverb->GetAllParameters()[(int)::Parameter::HiPassEnabled] < 0.5f)
+            reverb->SetParameter(::Parameter::HiPassEnabled, 1.0f);
+        break;
+    case ::Parameter::LowPass:
+        if (reverb->GetAllParameters()[(int)::Parameter::LowPassEnabled] < 0.5f)
+            reverb->SetParameter(::Parameter::LowPassEnabled, 1.0f);
+        break;
+    // These three are the only inputs to makeupGain / scaledDryOut.
+    case ::Parameter::DryOut:
+    case ::Parameter::EarlyOut:
+    case ::Parameter::MainOut:
+        state.outputLevelsDirty = true;
+        break;
+    default:
+        break;
     }
 }
 
 /*
  * LED blink
  */
-
-// Get the blink pattern for a given preset index
-BlinkPattern getPresetBlinkPattern(int presetIndex) {
-    // Validate preset index
-    if (presetIndex < 0 || presetIndex >= gPresets.count) {
-        presetIndex = 0;  // Default to first preset if invalid
-    }
-    const PresetData& p = gPresets.presets[presetIndex];
-    return BlinkPattern{p.blinks, p.onDurationMs, p.offDurationMs, p.pauseAfterMs};
-}
 
 // Start a blink sequence
 void startBlinkSequence(BlinkPattern pattern) {
@@ -373,7 +393,7 @@ void updateBlinkState() {
 
     // If not active and not bypassed, restart the blink sequence
     if (!led2BlinkState.active) {
-        startBlinkSequence(getPresetBlinkPattern(state.currentPreset));
+        startBlinkSequence(state.blinkPattern);
         return;
     }
 
@@ -482,33 +502,35 @@ static void audioCallback(AudioHandle::InputBuffer  in,
         state.knobResetPending = false;
     }
 
-    const PresetData& activePreset = gPresets.presets[state.currentPreset];
-    const int         bank         = secondary ? 1 : 0;
+    const int bank = secondary ? 1 : 0;
 
-    for (int i = 0; i < kKnobCount; i++) {
-        if (gKnobs.Update(i, knobValues[i]))
-            applyKnobTarget(activePreset.knobMap[bank][i], knobValues[i]);
-    }
+    // Every reverb write is skipped while the main loop is loading a preset: it is
+    // rewriting state.knobMap and all 47 engine parameters at the same time.
+    if (!state.presetChangeInProgress) {
+        for (int i = 0; i < kKnobCount; i++) {
+            if (gKnobs.Update(i, knobValues[i]))
+                applyKnobTarget(state.knobMap[bank][i], knobValues[i]);
+        }
 
-    // SWITCH_1: off = 2 delay lines, on = the preset's max
-    float numDelayLines = hw.switches[Terrarium::SWITCH_1].Pressed()
-        ? gPresets.presets[state.currentPreset].maxDelayLines
-        : 2.0f;
+        // SWITCH_1: off = 2 delay lines, on = the preset's max
+        const float numDelayLines = hw.switches[Terrarium::SWITCH_1].Pressed()
+            ? state.maxDelayLines
+            : 2.0f;
 
-    if (hasChanged(state.prevNumDelayLines, numDelayLines)) {
-        // TODO: Determine if ClearBuffers() is needed when changing delay line count
-        reverb->SetParameter(::Parameter::LineCount, numDelayLines);
-        state.prevNumDelayLines = numDelayLines;
+        if (hasChanged(state.prevNumDelayLines, numDelayLines)) {
+            reverb->SetParameter(::Parameter::LineCount, numDelayLines);
+            state.prevNumDelayLines = numDelayLines;
+        }
+
+        // Process Bloom/Reverse tap switch
+        if (state.prevReverseTaps != reverseTaps) {
+            reverb->SetParameter(::Parameter::isReverse, reverseTaps ? 1.0f : 0.0f);
+            state.prevReverseTaps = reverseTaps;
+        }
     }
 
     // SWITCH_4: reverse destination (off = into reverb wet path; on = direct output mix)
     const bool reverseIntoReverb = !hw.switches[Terrarium::SWITCH_4].Pressed();
-
-    // Process Bloom/Reverse tap switch
-    if (state.prevReverseTaps != reverseTaps) {
-        reverb->SetParameter(::Parameter::isReverse, reverseTaps ? 1.0f : 0.0f);
-        state.prevReverseTaps = reverseTaps;
-    }
 
 
 
@@ -527,17 +549,23 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     if (!state.presetChangeInProgress) {
         const float reverseTarget = state.reverseDelayOn ? 1.0f : 0.0f;
 
-        // Dynamic makeup gain (equal-power dry/wet compensation). Reads the live
-        // normalized output levels rather than knob positions: with knob_map the
-        // knobs need not be mapped to DryOut/EarlyOut/MainOut at all.
-        const float* outLevels     = reverb->GetAllParameters();
-        const float  dryOutValue   = outLevels[(int)::Parameter::DryOut];
-        const float  earlyOutValue = outLevels[(int)::Parameter::EarlyOut];
-        const float  mainOutValue  = outLevels[(int)::Parameter::MainOut];
-        float totalSignal = dryOutValue + earlyOutValue + mainOutValue + FLOAT_EPSILON;
-        float wetBalance = (earlyOutValue + mainOutValue) / totalSignal;
-        float compensation = sinf(wetBalance * M_PI_2);
-        float makeupGain = OUTPUT_VOLUME_BOOST * (1.0f + compensation * MAKEUP_GAIN_STRENGTH);
+        // Makeup gain and the dry-cancellation scale depend only on the three output
+        // levels, so they are derived when those change, not once per block.
+        if (state.outputLevelsDirty) {
+            const float* levels        = reverb->GetAllParameters();
+            const float  dryOutValue   = levels[(int)::Parameter::DryOut];
+            const float  earlyOutValue = levels[(int)::Parameter::EarlyOut];
+            const float  mainOutValue  = levels[(int)::Parameter::MainOut];
+            const float  totalSignal   = dryOutValue + earlyOutValue + mainOutValue
+                                         + FLOAT_EPSILON;
+            const float  wetBalance    = (earlyOutValue + mainOutValue) / totalSignal;
+            const float  compensation  = sinf(wetBalance * M_PI_2);
+            state.makeupGain   = OUTPUT_VOLUME_BOOST
+                                 * (1.0f + compensation * MAKEUP_GAIN_STRENGTH);
+            state.scaledDryOut = reverb->GetScaledParameter(::Parameter::DryOut);
+            state.outputLevelsDirty = false;
+        }
+        const float makeupGain = state.makeupGain;
 
         if (reverseIntoReverb) {
             // SWITCH_4 off: reverse the dry guitar and inject it into the reverb input.
@@ -553,7 +581,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
                 reverbInputBuffer[i]   = audioInputBuffer[i] + injectedReverse;
             }
             reverb->Process(reverbInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
-            const float scaledDryOut = reverb->GetScaledParameter(::Parameter::DryOut);
+            const float scaledDryOut = state.scaledDryOut;
 
             for (size_t i = 0; i < size; i++) {
                 if (state.bypass) {
@@ -650,6 +678,9 @@ int main(void) {
     state.secondaryActive = false;
     state.comboLatched = false;
     state.knobResetPending = false;
+    state.outputLevelsDirty = true;
+    state.makeupGain        = OUTPUT_VOLUME_BOOST;
+    state.scaledDryOut      = 0.0f;
 
     // Initialize persistent storage with default settings
     Settings defaultSettings = {
@@ -686,7 +717,7 @@ int main(void) {
             state.knobResetPending = true;
             cyclePreset();
             saveSettings();
-            startBlinkSequence(getPresetBlinkPattern(state.currentPreset));
+            startBlinkSequence(state.blinkPattern);
 
             // Small delay to ensure all buffers are fully initialized
             // before audio processing resumes
