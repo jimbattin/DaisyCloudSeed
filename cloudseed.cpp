@@ -20,6 +20,7 @@
 #include "CloudSeed/ReverseDelay.h"
 #include "preset_bank.h"
 #include "knob_bank.h"
+#include "footswitch_combo.h"
 
 using namespace daisy;
 using namespace daisysp;
@@ -35,7 +36,8 @@ constexpr float FLOAT_EPSILON = 1e-6f;
 constexpr int   REVERSE_BUFFER_SIZE = 192000;  // 4s @ 48kHz record buffer (SDRAM);
                                                // >= 2x the 2000ms max window so the
                                                // ReverseDelay size/2 clamp never engages
-constexpr float REVERSE_GRAIN_MS    = 500.0f;  // boot default window; the knob mapped to
+constexpr float REVERSE_GRAIN_NORM  = 0.4771f; // boot default window (~500 ms through
+                                               // Response3Oct); the knob mapped to
                                                // "reverse.delay" retunes it
 constexpr float REVERSE_TIME_MIN_MS = 20.0f;   // "reverse.delay" knob fully CCW
 constexpr float REVERSE_TIME_MAX_MS = 2000.0f; // "reverse.delay" knob fully CW
@@ -89,6 +91,7 @@ extern "C" {
 
 static PresetBank gPresets;
 static KnobBank gKnobs;
+static FootswitchCombo gCombo;
 
 // Persistent Settings
 struct Settings {
@@ -138,8 +141,9 @@ struct PedalState {
     float makeupGain;
     float scaledDryOut;
 
-    bool secondaryActive;  // both footswitches held -> knob bank 1
-    bool comboLatched;     // a combo happened during this press: suppress both actions
+    int   activeKnobBank;   // bank the live KnobBank snapshot was taken for
+    float reverseDelayNorm; // normalized reverse-window value; the current value of
+                            // the "reverse.delay" target, which has no params[] slot
     bool knobResetPending; // main loop changed the preset; re-snapshot knob positions
     Led led1;
     Led led2;
@@ -320,21 +324,25 @@ inline bool hasChanged(float prev, float current) {
     return (prev < current - FLOAT_EPSILON) || (prev > current + FLOAT_EPSILON);
 }
 
+// Antilog reverse-window mapping via the same ValueTables pattern the engine uses for
+// Parameter::LineDelay (CloudSeed/ReverbController.h:114): min + table * span.
+// Response3Oct is (8^x - 1) / 7 normalized, so 0.0 -> 20ms, 0.5 -> ~537ms, 1.0 -> 2000ms.
+static float reverseWindowMs(float norm) {
+    return REVERSE_TIME_MIN_MS
+         + AudioLib::ValueTables::Get(norm, AudioLib::ValueTables::Response3Oct)
+           * (REVERSE_TIME_MAX_MS - REVERSE_TIME_MIN_MS);
+}
+
 // Writes one knob value to its mapped destination.
 static void applyKnobTarget(const KnobTarget& target, float value) {
     if (target.kind == KnobTarget_ReverseDelay) {
-        // Antilog knob response via the same ValueTables pattern the engine uses for
-        // Parameter::LineDelay (CloudSeed/ReverbController.h:114): min + table * span.
-        // Response3Oct is (8^x - 1) / 7 normalized, so 0.0 -> 20ms, 0.5 -> ~537ms,
-        // 1.0 -> 2000ms.
-        const float reverseMs = REVERSE_TIME_MIN_MS
-            + AudioLib::ValueTables::Get(value, AudioLib::ValueTables::Response3Oct)
-              * (REVERSE_TIME_MAX_MS - REVERSE_TIME_MIN_MS);
-        const int grainSamples = (int)(reverseMs * state.samplesPerMs);
+        const float reverseMs    = reverseWindowMs(value);
+        const int   grainSamples = (int)(reverseMs * state.samplesPerMs);
         if (grainSamples != state.prevReverseGrainSamples) {
             reverseDelay.SetGrainSamples(grainSamples);
             state.prevReverseGrainSamples = grainSamples;
         }
+        state.reverseDelayNorm = value;
         return;
     }
 
@@ -362,6 +370,15 @@ static void applyKnobTarget(const KnobTarget& target, float value) {
     default:
         break;
     }
+}
+
+// Current value of whatever a knob is mapped to, in knob (0..1) space. SetParameter
+// stores knob values verbatim in parameters[] (CloudSeed/ReverbController.h:170), so
+// this is directly comparable to a raw knob position.
+static float knobTargetValue(const KnobTarget& target) {
+    if (target.kind == KnobTarget_ReverseDelay)
+        return state.reverseDelayNorm;
+    return reverb->GetAllParameters()[target.paramIndex];
 }
 
 /*
@@ -455,30 +472,28 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // Process footswitches
     //
 
-    const bool fs1       = hw.switches[Terrarium::FOOTSWITCH_1].Pressed();
-    const bool fs2       = hw.switches[Terrarium::FOOTSWITCH_2].Pressed();
-    const bool secondary = fs1 && fs2;
-
     // Holding both footswitches is the secondary-knob gesture, not a bypass toggle
-    // and not a preset change, so both actions move to the release edge and are
-    // suppressed for any press that was part of a combo.
-    if (secondary)
-        state.comboLatched = true;
+    // and not a preset change. Both actions fire on the release edge, and the edges
+    // belonging to a combo press are eaten by FootswitchCombo. All four accessors
+    // are read exactly once per callback: libdaisy's edge flags are only valid for
+    // the update in which they occur (hid/switch.h:62-66).
+    const FootswitchCombo::Actions fsActions = gCombo.Update(
+        hw.switches[Terrarium::FOOTSWITCH_1].Pressed(),
+        hw.switches[Terrarium::FOOTSWITCH_2].Pressed(),
+        hw.switches[Terrarium::FOOTSWITCH_1].FallingEdge(),
+        hw.switches[Terrarium::FOOTSWITCH_2].FallingEdge());
 
     // (De-)Activate bypass and toggle LED when the left footswitch is released
-    if (hw.switches[Terrarium::FOOTSWITCH_1].FallingEdge() && !state.comboLatched) {
+    if (fsActions.fs1Release) {
         state.bypass = !state.bypass;
         state.led1.Set(state.bypass ? 0.0f : 1.0f);
         state.triggerBypassSave = true;
     }
 
     // Cycle presets (actual preset change happens in main loop)
-    if (hw.switches[Terrarium::FOOTSWITCH_2].FallingEdge() && !state.comboLatched) {
+    if (fsActions.fs2Release) {
         state.triggerPresetChange = true;
     }
-
-    if (!fs1 && !fs2)
-        state.comboLatched = false;
 
     //
     // Process knobs and toggle switches
@@ -494,22 +509,33 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     for (int i = 0; i < kKnobCount; i++)
         knobValues[i] = hw.knob[kKnobIndex[i]].Value();
 
-    // Any bank or preset transition parks every knob until it is physically moved,
-    // so a knob dialled in one bank never lands on the other bank's target.
-    if (secondary != state.secondaryActive || state.knobResetPending || !gKnobs.primed) {
-        gKnobs.Reset(knobValues);
-        state.secondaryActive  = secondary;
-        state.knobResetPending = false;
-    }
-
-    const int bank = secondary ? 1 : 0;
+    // Holding both footswitches selects bank 1; the gesture stays engaged until both
+    // are released, so lifting one foot first cannot drop the bank mid-turn.
+    const int bank = gCombo.active ? 1 : 0;
 
     // Every reverb write is skipped while the main loop is loading a preset: it is
-    // rewriting state.knobMap and all 47 engine parameters at the same time.
+    // rewriting state.knobMap and all 47 engine parameters at the same time. The
+    // re-snapshot below is gated for the same reason (it must not straddle a knobMap
+    // rewrite); knobResetPending simply stays set until the load completes.
     if (!state.presetChangeInProgress) {
+        // Any bank or preset transition re-snapshots knob positions, so movement made
+        // in one bank is never replayed as a delta into the other bank's target.
+        if (bank != state.activeKnobBank || state.knobResetPending || !gKnobs.primed) {
+            gKnobs.Reset(knobValues);
+            state.activeKnobBank   = bank;
+            state.knobResetPending = false;
+        }
+
+        // Range-scaled relative takeover: a knob's movement since its last accepted
+        // update is added to the current value of its target, scaled by the range left
+        // in the direction of travel, so it responds immediately from wherever it sits,
+        // never jumps the parameter to the pot's absolute position, and lands exactly on
+        // 0.0 / 1.0 when turned to a stop.
         for (int i = 0; i < kKnobCount; i++) {
-            if (gKnobs.Update(i, knobValues[i]))
-                applyKnobTarget(state.knobMap[bank][i], knobValues[i]);
+            const KnobTarget& target = state.knobMap[bank][i];
+            float             value;
+            if (gKnobs.Update(i, knobValues[i], knobTargetValue(target), value))
+                applyKnobTarget(target, value);
         }
 
         // SWITCH_1: off = 2 delay lines, on = the preset's max
@@ -651,8 +677,9 @@ int main(void) {
     reverb->ClearBuffers();
 
     // Initialize reverse delay stage (records dry input or reverb output for backward playback)
-    reverseDelay.Init(reverseDelayBuffer, REVERSE_BUFFER_SIZE,
-                      (int)(sampleRate * REVERSE_GRAIN_MS / 1000.0f));
+    const int bootGrainSamples =
+        (int)(sampleRate * reverseWindowMs(REVERSE_GRAIN_NORM) / 1000.0f);
+    reverseDelay.Init(reverseDelayBuffer, REVERSE_BUFFER_SIZE, bootGrainSamples);
     reverseDelay.ClearBuffers();
 
     // Give the knobs real ADC smoothing: libdaisy's default slew computes to a
@@ -661,7 +688,7 @@ int main(void) {
         hw.knob[kKnobIndex[i]].SetCoeff(KNOB_SMOOTHING_COEFF);
 
     // Initialize previous parameter values
-    state.prevReverseGrainSamples = 0;
+    state.prevReverseGrainSamples = bootGrainSamples;
     state.prevNumDelayLines = 0.0f; // Let the audio callback capture the real value of active lines
     state.prevReverseTaps = false;
 
@@ -675,8 +702,8 @@ int main(void) {
     state.reverseDelayOn = false;
     state.reverseMix = 0.0f;
     state.samplesPerMs = sampleRate / 1000.0f;
-    state.secondaryActive = false;
-    state.comboLatched = false;
+    state.activeKnobBank = 0;
+    state.reverseDelayNorm = REVERSE_GRAIN_NORM;
     state.knobResetPending = false;
     state.outputLevelsDirty = true;
     state.makeupGain        = OUTPUT_VOLUME_BOOST;
@@ -700,6 +727,18 @@ int main(void) {
 
     // Start audio processing
     hw.StartAdc();
+
+    // Converge the knob one-poles before the first audio callback. AnalogControl
+    // starts at 0.0 and only filters toward the pot position while
+    // ProcessAnalogControls() runs (libdaisy/src/hid/ctrl.cpp:13,45), which
+    // otherwise first happens inside the audio callback: the KnobBank snapshot
+    // would capture ~5% of every real position and the settling ramp would be read
+    // as a deliberate turn. 200 ms at KNOB_SMOOTHING_COEFF leaves <0.01% error.
+    for (int i = 0; i < 200; i++) {
+        hw.ProcessAnalogControls();
+        System::Delay(1);
+    }
+
     hw.StartAudio(audioCallback);
 
     while (true) {

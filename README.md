@@ -89,10 +89,21 @@ Each value is a quoted `"group.Parameter"` naming a parameter from that preset's
 required and `make` rejects an unknown knob key, an unknown group or parameter, a parameter
 that lives in a different group, and `LineCount`/`isReverse` (those belong to SW1/SW2).
 
-A knob only starts controlling its target after it is **physically moved**: switching banks,
-switching presets, and power-up all park the knobs, so a knob dialled in one bank never slams
-the other bank's parameter when you let go of the footswitches. A consequence is that a freshly
-loaded preset sounds exactly as authored until you touch a knob.
+Knobs are **relative**, not absolute: turning one adds the amount you turned it to whatever its
+target is currently set to, instead of snapping the parameter to the knob's physical position.
+So every knob responds immediately to any deliberate turn, in either direction, from wherever
+it happens to be sitting, and nothing ever jumps. The amount is scaled by how much range is
+left in the direction you are turning, so both ends are always reachable: turning a knob to its
+counter-clockwise stop puts its target at exactly 0.0 no matter where the knob started (that is
+what makes the three output-level knobs silence the pedal at their stops), and the clockwise
+stop puts it at 1.0. A knob you do not touch writes nothing, so a freshly loaded preset sounds
+exactly as authored - including a knob that happens to be parked at a stop - and a knob dialled
+in the secondary bank leaves its primary target alone when you let go of the footswitches. The
+trade-off is that the knob position no longer indicates the parameter value.
+
+Holding both footswitches is a gesture, not two taps: the bank stays on the secondary map
+until **both** switches are released (lifting one foot early does not drop it), and neither
+bypass nor preset cycling fires for that press, in either release order.
 
 `input.HighPass` and `input.LowPass` switch their filter on the first time their knob is
 turned; every other gated parameter (the shelves, the in-loop cutoff, the diffusers) must be
