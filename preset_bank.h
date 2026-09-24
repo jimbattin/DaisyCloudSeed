@@ -30,7 +30,7 @@ struct PresetData {
     uint32_t pauseAfterMs;
     float    maxDelayLines;
     float    params[(int)Parameter::Count];
-    // [bank][knob]; bank 0 = primary, bank 1 = secondary (both footswitches held)
+    // [bank][knob]; bank 0 = primary, bank 1 = secondary (preset footswitch (FS2) held)
     KnobTarget knobMap[kKnobBanks][kKnobCount];
 };
 

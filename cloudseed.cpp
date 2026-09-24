@@ -20,7 +20,7 @@
 #include "CloudSeed/ReverseDelay.h"
 #include "preset_bank.h"
 #include "knob_bank.h"
-#include "footswitch_combo.h"
+#include "preset_footswitch.h"
 
 using namespace daisy;
 using namespace daisysp;
@@ -91,7 +91,7 @@ extern "C" {
 
 static PresetBank gPresets;
 static KnobBank gKnobs;
-static FootswitchCombo gCombo;
+static PresetFootswitch gPresetFs;
 
 // Persistent Settings
 struct Settings {
@@ -471,26 +471,21 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     // Process footswitches
     //
 
-    // Holding both footswitches is the secondary-knob gesture, not a bypass toggle
-    // and not a preset change. Both actions fire on the release edge, and the edges
-    // belonging to a combo press are eaten by FootswitchCombo. All four accessors
-    // are read exactly once per callback: libdaisy's edge flags are only valid for
-    // the update in which they occur (hid/switch.h:62-66).
-    const FootswitchCombo::Actions fsActions = gCombo.Update(
-        hw.switches[Terrarium::FOOTSWITCH_1].Pressed(),
-        hw.switches[Terrarium::FOOTSWITCH_2].Pressed(),
-        hw.switches[Terrarium::FOOTSWITCH_1].FallingEdge(),
-        hw.switches[Terrarium::FOOTSWITCH_2].FallingEdge());
+    // Each accessor is read exactly once per callback: libdaisy's edge flags are only
+    // valid for the update in which they occur (hid/switch.h:62-66).
 
     // (De-)Activate bypass and toggle LED when the left footswitch is released
-    if (fsActions.fs1Release) {
+    if (hw.switches[Terrarium::FOOTSWITCH_1].FallingEdge()) {
         state.bypass = !state.bypass;
         state.led1.Set(state.bypass ? 0.0f : 1.0f);
         state.triggerBypassSave = true;
     }
 
-    // Cycle presets (actual preset change happens in main loop)
-    if (fsActions.fs2Release) {
+    // Holding the preset footswitch is the secondary-bank gesture. Its release cycles
+    // the preset (actual change happens in the main loop) only if no secondary knob
+    // wrote a value during the hold.
+    if (gPresetFs.Update(hw.switches[Terrarium::FOOTSWITCH_2].Pressed(),
+                         hw.switches[Terrarium::FOOTSWITCH_2].FallingEdge())) {
         state.triggerPresetChange = true;
     }
 
@@ -508,9 +503,8 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     for (int i = 0; i < kKnobCount; i++)
         knobValues[i] = hw.knob[kKnobIndex[i]].Value();
 
-    // Holding both footswitches selects bank 1; the gesture stays engaged until both
-    // are released, so lifting one foot first cannot drop the bank mid-turn.
-    const int bank = gCombo.active ? 1 : 0;
+    // Holding the preset footswitch selects bank 1 until its release edge.
+    const int bank = gPresetFs.held ? 1 : 0;
 
     // Every reverb write is skipped while the main loop is loading a preset: it is
     // rewriting state.knobMap and all 47 engine parameters at the same time. The
@@ -530,6 +524,11 @@ static void audioCallback(AudioHandle::InputBuffer  in,
         state.knobResetPending = false;
         for (int w = 0; w < knobWriteCount; w++)
             applyKnobTarget(state.knobMap[bank][knobWrites[w].knob], knobWrites[w].value);
+
+        // A secondary knob that wrote during this hold turns the FS2 release into a
+        // no-op. Entering bank 1 re-parks (zero writes), so the press itself never counts.
+        if (bank == 1 && knobWriteCount > 0)
+            gPresetFs.edited = true;
 
         // SWITCH_1: off = 2 delay lines, on = the preset's max
         const float numDelayLines = hw.switches[Terrarium::SWITCH_1].Pressed()

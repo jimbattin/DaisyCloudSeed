@@ -15,7 +15,7 @@
 #     keys. Each value is a quoted "group.Parameter" naming a parameter from that
 #     preset's own [preset.params.<group>] section, or "reverse.delay" for the
 #     reverse-delay window length. Secondary (_b) functions are reachable by
-#     holding BOTH footswitches down while turning the knob.
+#     holding the preset footswitch (FS2) down while turning the knob.
 #   * input.HighPass / input.LowPass are enabled automatically the first time
 #     their knob is turned; every other switch-gated parameter (shelves, cutoff,
 #     the diffusers) must be enabled in [preset.params.*] to be audible.
@@ -98,7 +98,7 @@ led_pause_ms = 5000
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
-# is active only while BOTH footswitches are held down.
+# is active only while the preset footswitch (FS2) is held down.
 [preset.knob_map]
 knob1_a = "output.DryOut"
 knob2_a = "output.EarlyOut"
@@ -192,7 +192,7 @@ led_pause_ms = 5000
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
-# is active only while BOTH footswitches are held down.
+# is active only while the preset footswitch (FS2) is held down.
 [preset.knob_map]
 knob1_a = "output.DryOut"
 knob2_a = "output.EarlyOut"
@@ -286,7 +286,7 @@ led_pause_ms = 5000
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
-# is active only while BOTH footswitches are held down.
+# is active only while the preset footswitch (FS2) is held down.
 [preset.knob_map]
 knob1_a = "output.DryOut"
 knob2_a = "output.EarlyOut"
@@ -380,7 +380,7 @@ led_pause_ms = 5000
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
-# is active only while BOTH footswitches are held down.
+# is active only while the preset footswitch (FS2) is held down.
 [preset.knob_map]
 knob1_a = "output.DryOut"
 knob2_a = "output.EarlyOut"
@@ -474,7 +474,7 @@ led_pause_ms = 5000
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
-# is active only while BOTH footswitches are held down.
+# is active only while the preset footswitch (FS2) is held down.
 [preset.knob_map]
 knob1_a = "output.DryOut"
 knob2_a = "output.EarlyOut"
@@ -568,7 +568,7 @@ led_pause_ms = 5000
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
-# is active only while BOTH footswitches are held down.
+# is active only while the preset footswitch (FS2) is held down.
 [preset.knob_map]
 knob1_a = "output.DryOut"
 knob2_a = "output.EarlyOut"
@@ -662,7 +662,7 @@ led_pause_ms = 5000
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
-# is active only while BOTH footswitches are held down.
+# is active only while the preset footswitch (FS2) is held down.
 [preset.knob_map]
 knob1_a = "output.DryOut"
 knob2_a = "output.EarlyOut"
@@ -756,7 +756,7 @@ led_pause_ms = 5000
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
-# is active only while BOTH footswitches are held down.
+# is active only while the preset footswitch (FS2) is held down.
 [preset.knob_map]
 knob1_a = "output.DryOut"
 knob2_a = "output.EarlyOut"
@@ -850,7 +850,7 @@ led_pause_ms = 5000
 max_delay_lines = 4.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
-# is active only while BOTH footswitches are held down.
+# is active only while the preset footswitch (FS2) is held down.
 [preset.knob_map]
 knob1_a = "output.DryOut"
 knob2_a = "output.EarlyOut"
@@ -944,7 +944,7 @@ led_pause_ms = 5000
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
-# is active only while BOTH footswitches are held down.
+# is active only while the preset footswitch (FS2) is held down.
 [preset.knob_map]
 knob1_a = "output.DryOut"
 knob2_a = "output.EarlyOut"
