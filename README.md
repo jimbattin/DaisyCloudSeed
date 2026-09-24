@@ -89,17 +89,15 @@ Each value is a quoted `"group.Parameter"` naming a parameter from that preset's
 required and `make` rejects an unknown knob key, an unknown group or parameter, a parameter
 that lives in a different group, and `LineCount`/`isReverse` (those belong to SW1/SW2).
 
-Knobs are **relative**, not absolute: turning one adds the amount you turned it to whatever its
-target is currently set to, instead of snapping the parameter to the knob's physical position.
-So every knob responds immediately to any deliberate turn, in either direction, from wherever
-it happens to be sitting, and nothing ever jumps. The amount is scaled by how much range is
-left in the direction you are turning, so both ends are always reachable: turning a knob to its
-counter-clockwise stop puts its target at exactly 0.0 no matter where the knob started (that is
-what makes the three output-level knobs silence the pedal at their stops), and the clockwise
-stop puts it at 1.0. A knob you do not touch writes nothing, so a freshly loaded preset sounds
-exactly as authored - including a knob that happens to be parked at a stop - and a knob dialled
-in the secondary bank leaves its primary target alone when you let go of the footswitches. The
-trade-off is that the knob position no longer indicates the parameter value.
+Knobs are **absolute**: once a knob has taken over, its position is the parameter value. After
+power-up, a preset change, or switching knob banks (including letting go of both footswitches)
+every knob is *parked* and writes nothing, so a freshly loaded preset sounds exactly as authored -
+even with a knob sitting at a stop. The first deliberate turn takes the parameter to the knob's
+position with a 50 ms glide from its current value (no step, no click), and from then on the
+parameter follows the knob 1:1. The stops are exact: fully counter-clockwise is 0.0 (that is
+what makes the three output-level knobs silence the pedal) and fully clockwise is 1.0. A knob
+dialled in the secondary bank is parked when you release the footswitches; its next turn glides
+its primary target to the knob's position.
 
 Holding both footswitches is a gesture, not two taps: the bank stays on the secondary map
 until **both** switches are released (lifting one foot early does not drop it), and neither

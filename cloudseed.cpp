@@ -141,7 +141,6 @@ struct PedalState {
     float makeupGain;
     float scaledDryOut;
 
-    int   activeKnobBank;   // bank the live KnobBank snapshot was taken for
     float reverseDelayNorm; // normalized reverse-window value; the current value of
                             // the "reverse.delay" target, which has no params[] slot
     bool knobResetPending; // main loop changed the preset; re-snapshot knob positions
@@ -515,28 +514,22 @@ static void audioCallback(AudioHandle::InputBuffer  in,
 
     // Every reverb write is skipped while the main loop is loading a preset: it is
     // rewriting state.knobMap and all 47 engine parameters at the same time. The
-    // re-snapshot below is gated for the same reason (it must not straddle a knobMap
+    // re-park below is gated for the same reason (it must not straddle a knobMap
     // rewrite); knobResetPending simply stays set until the load completes.
     if (!state.presetChangeInProgress) {
-        // Any bank or preset transition re-snapshots knob positions, so movement made
-        // in one bank is never replayed as a delta into the other bank's target.
-        if (bank != state.activeKnobBank || state.knobResetPending || !gKnobs.primed) {
-            gKnobs.Reset(knobValues);
-            state.activeKnobBank   = bank;
-            state.knobResetPending = false;
-        }
+        // Any bank or preset transition re-parks every knob (knob_bank.h): a knob
+        // writes nothing until it is turned, then glides its target to the pot's
+        // position over kKnobGlideBlocks blocks and tracks it from there.
+        float knobCurrent[kKnobCount];
+        for (int i = 0; i < kKnobCount; i++)
+            knobCurrent[i] = knobTargetValue(state.knobMap[bank][i]);
 
-        // Range-scaled relative takeover: a knob's movement since its last accepted
-        // update is added to the current value of its target, scaled by the range left
-        // in the direction of travel, so it responds immediately from wherever it sits,
-        // never jumps the parameter to the pot's absolute position, and lands exactly on
-        // 0.0 / 1.0 when turned to a stop.
-        for (int i = 0; i < kKnobCount; i++) {
-            const KnobTarget& target = state.knobMap[bank][i];
-            float             value;
-            if (gKnobs.Update(i, knobValues[i], knobTargetValue(target), value))
-                applyKnobTarget(target, value);
-        }
+        KnobWrite knobWrites[kKnobCount];
+        const int knobWriteCount = gKnobs.Scan(
+            bank, state.knobResetPending, knobValues, knobCurrent, knobWrites);
+        state.knobResetPending = false;
+        for (int w = 0; w < knobWriteCount; w++)
+            applyKnobTarget(state.knobMap[bank][knobWrites[w].knob], knobWrites[w].value);
 
         // SWITCH_1: off = 2 delay lines, on = the preset's max
         const float numDelayLines = hw.switches[Terrarium::SWITCH_1].Pressed()
@@ -702,7 +695,6 @@ int main(void) {
     state.reverseDelayOn = false;
     state.reverseMix = 0.0f;
     state.samplesPerMs = sampleRate / 1000.0f;
-    state.activeKnobBank = 0;
     state.reverseDelayNorm = REVERSE_GRAIN_NORM;
     state.knobResetPending = false;
     state.outputLevelsDirty = true;

@@ -5,129 +5,159 @@
 
 #include "preset_bank.h"
 
-// Smallest change in knob position, as a fraction of full travel, that counts as a
-// deliberate turn. Must stay above the ADC noise floor left by the 20 ms one-pole
-// applied in main(): every accepted wobble walks the target value. It is also the
-// coarsest step a knob can make, so a full sweep is ~100 increments.
+// How far a parked knob must move from its Reset() snapshot before it takes over its
+// target, as a fraction of full travel. Must sit far above the ADC noise left by the
+// 20 ms one-pole applied in main().
 static const float kKnobMoveThreshold = 0.01f;
 
-// Positions this close to a rail count as "at the stop": the pot/ADC rarely reads an
-// exact 0.0 or 1.0 (Process() tops out at 65535/65536), and a target that stalls a
-// hair short of the endpoint is the bug this window closes. Two orders of magnitude
-// below kKnobMoveThreshold, and only consulted inside an accepted movement, so a knob
-// merely resting against a stop still writes nothing.
-static const float kKnobRailWindow = 0.001f;
+// A live knob tracks the pot but does not re-write the engine for noise: a change
+// smaller than this (0..1 knob space) is dropped. Rail values are exempt so the last
+// fraction of travel into a stop still lands exactly.
+static const float kKnobApplyEpsilon = 0.001f;
 
-// Guard for the scaling divisors below.
-static const float kKnobRangeEpsilon = 1e-4f;
+// Positions this close to a rail are written as exactly 0.0 / 1.0. The top reading is
+// at most 65535/65536, and libdaisy documents ~0.002 of bleed at the bottom of the pots
+// (libdaisy/src/hid/ctrl.cpp:3-4).
+static const float kKnobRailWindow = 0.003f;
 
-// Range-scaled relative (jump-free) knob tracking across control-bank and preset
-// changes.
+// Takeover glide length in Update() calls, i.e. audio blocks (1 ms each): the first
+// write after a knob goes live ramps from the target's current value to the pot instead
+// of stepping, because engine parameters are not smoothed downstream.
+static const int kKnobGlideBlocks = 50;
+
+struct KnobWrite
+{
+    int   knob;   // 0..kKnobCount-1, presets.toml knob order
+    float value;  // 0..1
+};
+
+// Absolute knob takeover across control-bank and preset changes.
 //
-// A knob never writes its absolute position, because the parameter it addresses is
-// authored by the preset and has no relationship to where the pot happens to sit.
-// Reset() snapshots knob positions only; each later movement past kKnobMoveThreshold
-// is applied as a delta scaled by the range still available in the direction of
-// travel, so turning a knob to a stop lands its target exactly on 0.0 or 1.0 from any
-// starting position, while a partial turn moves the value proportionally. An
-// untouched knob leaves its target exactly as the preset authored it, a knob turned in
-// one bank cannot disturb the other bank's target (Reset() re-snapshots on every
-// transition), and takeover never jumps to the pot's absolute position. The exactness
-// at the stops comes from a rail snap that a knob must earn: only a knob that has
-// already been turned since the last Reset() (`engaged`) may complete its travel into
-// a rail with a sub-deadband movement.
+// Reset() snapshots knob positions and parks every knob. A parked knob writes nothing,
+// so power-up, a preset load, and entering or leaving the secondary bank never change a
+// parameter on their own. A knob that moves kKnobMoveThreshold from its snapshot goes
+// live and glides its target linearly from the target's current value to the pot's
+// (possibly still moving) position over kKnobGlideBlocks calls, landing exactly on it.
+// From then on it writes its own position whenever that changes by kKnobApplyEpsilon
+// or reaches a rail. Once the glide ends, the knob position is the parameter value.
+// A Reset() during a glide cancels it and leaves the target where the glide had got to.
 struct KnobBank
 {
-    float last[kKnobCount];     // knob position at the last accepted movement
-    bool  engaged[kKnobCount];  // true once this knob has been turned since Reset()
-    bool  primed;               // false until Reset() has seen real positions
+    float snapshot[kKnobCount];   // position at the last Reset()
+    float applied[kKnobCount];    // last value written (glide start before the first write)
+    float glideFrom[kKnobCount];  // target value when the knob went live
+    int   glideStep[kKnobCount];  // 0 = not gliding, else next step 1..kKnobGlideBlocks
+    bool  live[kKnobCount];       // true once the knob has taken over its target
+    int   activeBank;             // bank the snapshot was taken for
+    bool  primed;                 // false until Reset() has seen real positions
 
-    KnobBank() : primed(false)
+    KnobBank() : activeBank(0), primed(false)
     {
         for (int i = 0; i < kKnobCount; i++)
         {
-            last[i]    = 0.0f;
-            engaged[i] = false;
+            snapshot[i]  = 0.0f;
+            applied[i]   = 0.0f;
+            glideFrom[i] = 0.0f;
+            glideStep[i] = 0;
+            live[i]      = false;
         }
     }
 
-    void Reset(const float* positions)
+    void Reset(const float* positions, int bank)
     {
         for (int i = 0; i < kKnobCount; i++)
         {
-            last[i]    = positions[i];
-            engaged[i] = false;
+            snapshot[i]  = positions[i];
+            applied[i]   = 0.0f;
+            glideFrom[i] = 0.0f;
+            glideStep[i] = 0;
+            live[i]      = false;
         }
-        primed = true;
+        activeBank = bank;
+        primed     = true;
     }
 
-    // Applies knob `i`'s movement since the last accepted update to `currentValue`,
-    // writing the new target value to `out`. Returns false (and writes nothing) when
-    // the knob has not moved far enough to count as a deliberate turn, or when the
-    // movement leaves the target value unchanged.
+    // Reports the value knob `i` should write this block. `currentValue` is the target's
+    // current value (only read on the call that takes over). Returns false, writing
+    // nothing to `out`, while parked or while the value would not change.
     bool Update(int i, float position, float currentValue, float& out)
     {
         if (!primed)
             return false;
 
-        const float from     = last[i];
-        const float delta    = position - from;
-        const bool  atBottom = position <= kKnobRailWindow;
-        const bool  atTop    = position >= 1.0f - kKnobRailWindow;
+        float target = position;
+        if (target <= kKnobRailWindow)
+            target = 0.0f;
+        else if (target >= 1.0f - kKnobRailWindow)
+            target = 1.0f;
 
-        const bool moved = fabsf(delta) >= kKnobMoveThreshold;
-
-        // A turn already in progress must land exactly on the endpoint even when its
-        // final few degrees of travel fall inside the deadband: downward scaling keeps
-        // the value proportional to the position, so a turn whose last accepted update
-        // sat at 0.005 would otherwise stop at 0.005/start of the authored value - the
-        // residual this whole change exists to remove. `engaged` restricts that to a
-        // knob the user is actually turning: it is only set by an accepted movement and
-        // is cleared by Reset(), so a knob that merely rests against a stop at power-up,
-        // on a preset change, or on a bank change never slams its target to the rail.
-        const bool railArrival = engaged[i]
-                                 && ((atBottom && delta < 0.0f) || (atTop && delta > 0.0f));
-
-        if (!moved && !railArrival)
-            return false;
-
-        last[i] = position;
-        if (moved)
-            engaged[i] = true;
+        if (!live[i])
+        {
+            // The parked test uses the raw position, so a knob resting against a stop
+            // is still parked and cannot slam its target to the rail.
+            if (fabsf(position - snapshot[i]) < kKnobMoveThreshold)
+                return false;
+            live[i]      = true;
+            glideFrom[i] = currentValue;
+            applied[i]   = currentValue;
+            glideStep[i] = 1;
+        }
 
         float value;
-        if (delta > 0.0f)
+        if (glideStep[i] > 0)
         {
-            const float headroom = 1.0f - from;
-            value = (headroom <= kKnobRangeEpsilon)
-                        ? 1.0f
-                        : currentValue + delta * (1.0f - currentValue) / headroom;
+            const int k = glideStep[i];
+            if (k >= kKnobGlideBlocks)
+            {
+                value        = target;  // land exactly on the pot
+                glideStep[i] = 0;
+            }
+            else
+            {
+                value = glideFrom[i]
+                        + (target - glideFrom[i]) * ((float)k / (float)kKnobGlideBlocks);
+                glideStep[i] = k + 1;
+            }
+            if (value == applied[i])
+                return false;
         }
         else
         {
-            value = (from <= kKnobRangeEpsilon)
-                        ? 0.0f
-                        : currentValue + delta * currentValue / from;
+            value = target;
+            if (value == applied[i])
+                return false;
+            const bool atRail = (value == 0.0f || value == 1.0f);
+            if (!atRail && fabsf(value - applied[i]) < kKnobApplyEpsilon)
+                return false;
         }
 
-        // At the stop, be exactly at the endpoint: the scaled arithmetic lands within
-        // a float ulp of it, and the pot may bottom out a hair above zero.
-        if (atBottom)
-            value = 0.0f;
-        else if (atTop)
-            value = 1.0f;
-
-        if (value < 0.0f) value = 0.0f;
-        if (value > 1.0f) value = 1.0f;
-
-        // Nothing to write: a knob held against a stop whose target is already at that
-        // endpoint keeps re-arriving, and every write costs a SetParameter plus an
-        // output-level recompute.
-        if (value == currentValue)
-            return false;
-
-        out = value;
+        applied[i] = value;
+        out        = value;
         return true;
+    }
+
+    // One callback's worth of knob handling. Re-parks every knob when the bank changed,
+    // when `forceReset` is set (a preset was loaded), or on the first call; then fills
+    // `writes` (capacity kKnobCount) and returns how many. `currentValues[i]` is the
+    // current value of knob i's target in `bank`. A call that re-parks returns 0.
+    int Scan(int bank, bool forceReset, const float* positions, const float* currentValues,
+             KnobWrite* writes)
+    {
+        if (!primed || forceReset || bank != activeBank)
+            Reset(positions, bank);
+
+        int n = 0;
+        for (int i = 0; i < kKnobCount; i++)
+        {
+            float value;
+            if (Update(i, positions[i], currentValues[i], value))
+            {
+                writes[n].knob  = i;
+                writes[n].value = value;
+                n++;
+            }
+        }
+        return n;
     }
 };
 
