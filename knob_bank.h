@@ -8,22 +8,22 @@
 // How far a parked knob must move from its Reset() snapshot before it takes over its
 // target, as a fraction of full travel. Must sit far above the ADC noise left by the
 // 20 ms one-pole applied in main().
-static const float kKnobMoveThreshold = 0.01f;
+constexpr float kKnobMoveThreshold = 0.01f;
 
 // A live knob tracks the pot but does not re-write the engine for noise: a change
 // smaller than this (0..1 knob space) is dropped. Rail values are exempt so the last
 // fraction of travel into a stop still lands exactly.
-static const float kKnobApplyEpsilon = 0.001f;
+constexpr float kKnobApplyEpsilon = 0.001f;
 
 // Positions this close to a rail are written as exactly 0.0 / 1.0. The top reading is
 // at most 65535/65536, and libdaisy documents ~0.002 of bleed at the bottom of the pots
 // (libdaisy/src/hid/ctrl.cpp:3-4).
-static const float kKnobRailWindow = 0.003f;
+constexpr float kKnobRailWindow = 0.003f;
 
 // Takeover glide length in Update() calls, i.e. audio blocks (1 ms each): the first
 // write after a knob goes live ramps from the target's current value to the pot instead
 // of stepping, because engine parameters are not smoothed downstream.
-static const int kKnobGlideBlocks = 50;
+constexpr int kKnobGlideBlocks = 50;
 
 struct KnobWrite
 {
@@ -41,27 +41,41 @@ struct KnobWrite
 // From then on it writes its own position whenever that changes by kKnobApplyEpsilon
 // or reaches a rail. Once the glide ends, the knob position is the parameter value.
 // A Reset() during a glide cancels it and leaves the target where the glide had got to.
-struct KnobBank
+class KnobBank
 {
-    float snapshot[kKnobCount];   // position at the last Reset()
-    float applied[kKnobCount];    // last value written (glide start before the first write)
-    float glideFrom[kKnobCount];  // target value when the knob went live
-    int   glideStep[kKnobCount];  // 0 = not gliding, else next step 1..kKnobGlideBlocks
-    bool  live[kKnobCount];       // true once the knob has taken over its target
-    int   activeBank;             // bank the snapshot was taken for
-    bool  primed;                 // false until Reset() has seen real positions
-
-    KnobBank() : activeBank(0), primed(false)
+public:
+    // One callback's worth of knob handling. Re-parks every knob when the bank changed,
+    // when `forceReset` is set (a preset was loaded), or on the first call; then fills
+    // `writes` (capacity kKnobCount) and returns how many. `currentValues[i]` is the
+    // current value of knob i's target in `bank`. A call that re-parks returns 0.
+    int Scan(int bank, bool forceReset, const float* positions, const float* currentValues,
+             KnobWrite* writes)
     {
+        if (!primed || forceReset || bank != activeBank)
+            Reset(positions, bank);
+
+        int n = 0;
         for (int i = 0; i < kKnobCount; i++)
         {
-            snapshot[i]  = 0.0f;
-            applied[i]   = 0.0f;
-            glideFrom[i] = 0.0f;
-            glideStep[i] = 0;
-            live[i]      = false;
+            float value;
+            if (Update(i, positions[i], currentValues[i], value))
+            {
+                writes[n].knob  = i;
+                writes[n].value = value;
+                n++;
+            }
         }
+        return n;
     }
+
+private:
+    float snapshot[kKnobCount]  = {};  // position at the last Reset()
+    float applied[kKnobCount]   = {};  // last value written (glide start before the first write)
+    float glideFrom[kKnobCount] = {};  // target value when the knob went live
+    int   glideStep[kKnobCount] = {};  // 0 = not gliding, else next step 1..kKnobGlideBlocks
+    bool  live[kKnobCount]      = {};  // true once the knob has taken over its target
+    int   activeBank            = 0;   // bank the snapshot was taken for
+    bool  primed                = false;  // false until Reset() has seen real positions
 
     void Reset(const float* positions, int bank)
     {
@@ -134,30 +148,6 @@ struct KnobBank
         applied[i] = value;
         out        = value;
         return true;
-    }
-
-    // One callback's worth of knob handling. Re-parks every knob when the bank changed,
-    // when `forceReset` is set (a preset was loaded), or on the first call; then fills
-    // `writes` (capacity kKnobCount) and returns how many. `currentValues[i]` is the
-    // current value of knob i's target in `bank`. A call that re-parks returns 0.
-    int Scan(int bank, bool forceReset, const float* positions, const float* currentValues,
-             KnobWrite* writes)
-    {
-        if (!primed || forceReset || bank != activeBank)
-            Reset(positions, bank);
-
-        int n = 0;
-        for (int i = 0; i < kKnobCount; i++)
-        {
-            float value;
-            if (Update(i, positions[i], currentValues[i], value))
-            {
-                writes[n].knob  = i;
-                writes[n].value = value;
-                n++;
-            }
-        }
-        return n;
     }
 };
 

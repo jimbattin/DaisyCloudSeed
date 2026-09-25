@@ -2,7 +2,7 @@
 #
 # This file is compiled into the firmware image (see presets_toml.s) and parsed
 # once at boot. Edit values here, then rebuild and reflash:
-#     make presets-check && make && make program-dfu
+#     make && make program-dfu
 #
 # Rules enforced by the parser (a violation stops boot and blinks both LEDs):
 #   * Preset order is the order below. The index is stored in QSPI flash, so

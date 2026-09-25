@@ -6,11 +6,11 @@
 
 #include "CloudSeed/Parameter.h"
 
-static const int kMaxPresets       = 16;
-static const int kMaxPresetNameLen = 32;
+constexpr int kMaxPresets       = 16;
+constexpr int kMaxPresetNameLen = 32;
 
-static const int kKnobCount = 6;   // knob1..knob6
-static const int kKnobBanks = 2;   // 0 = primary ("_a"), 1 = secondary ("_b")
+constexpr int kKnobCount = 6;   // knob1..knob6
+constexpr int kKnobBanks = 2;   // 0 = primary ("_a"), 1 = secondary ("_b")
 
 // What a knob writes to. Param targets index PresetData::params (i.e.
 // (int)Parameter); ReverseDelay is the reverse-delay window length, which is not
@@ -18,7 +18,7 @@ static const int kKnobBanks = 2;   // 0 = primary ("_a"), 1 = secondary ("_b")
 enum KnobTargetKind : uint8_t { KnobTarget_Param = 0, KnobTarget_ReverseDelay = 1 };
 
 struct KnobTarget {
-    uint8_t kind;        // KnobTargetKind
+    KnobTargetKind kind;
     uint8_t paramIndex;  // valid only when kind == KnobTarget_Param
 };
 

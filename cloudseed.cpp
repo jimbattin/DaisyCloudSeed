@@ -4,26 +4,22 @@
 // allow up to 5 delay lines on the Daisy Seed.
 
 #include "daisy_petal.h"
-#include "daisysp.h"
 #include "terrarium.h"
 #include "cmsis_gcc.h"
+#include <atomic>
 #include <cmath>
-#include <array>
 #include <stdio.h>
 #include <string.h>
 
-#include "CloudSeed/Default.h"
 #include "CloudSeed/ReverbController.h"
 #include "CloudSeed/FastSin.h"
 #include "CloudSeed/AudioLib/ValueTables.h"
-#include "CloudSeed/AudioLib/MathDefs.h"
 #include "CloudSeed/ReverseDelay.h"
 #include "preset_bank.h"
 #include "knob_bank.h"
 #include "preset_footswitch.h"
 
 using namespace daisy;
-using namespace daisysp;
 using namespace terrarium;  // This is important for mapping the correct controls to the Daisy Seed on Terrarium PCB
 
 // Constants
@@ -31,6 +27,8 @@ constexpr size_t AUDIO_BUFFER_SIZE = 48;
 constexpr float OUTPUT_VOLUME_BOOST = 1.2f;
 constexpr float MAKEUP_GAIN_STRENGTH = 0.8f;  // Max additional gain when fully wet (0.0-1.0)
 constexpr float FLOAT_EPSILON = 1e-6f;
+constexpr float HALF_PI = 1.57079632679489661923f;  // π/2 for equal-power curves
+constexpr float TWO_PI  = 6.28318530717958647692f;
 
 // Reverse delay stage (records the reverb output and plays it back backwards)
 constexpr int   REVERSE_BUFFER_SIZE = 192000;  // 4s @ 48kHz record buffer (SDRAM);
@@ -49,21 +47,21 @@ constexpr float REVERSE_MIX_SMOOTHING = 0.002f;// per-sample one-pole toward tar
 // the 0.002 s default), i.e. no filtering at all; 0.05 is ~20 ms.
 constexpr float KNOB_SMOOTHING_COEFF = 0.05f;
 
-
-// Volatile global variable used to prevent optimization
-volatile float dummy_trig_value = 0.0f;
-
-
-#ifndef M_PI_2
-#define M_PI_2 1.57079632679489661923  // π/2 for equal-power curves
-#endif
-
 // Increment this when changing the settings struct so the software will know
 // to reset to defaults if this ever changes.
-#define SETTINGS_VERSION 2
+constexpr int SETTINGS_VERSION = 2;
 
-// Switch to control Bloom (reverse tap decay)
-static const int BLOOM_SWITCH = Terrarium::SWITCH_2;
+// Settings are written to flash this long after the last preset/bypass change, so a
+// burst of footswitch presses costs one QSPI sector erase instead of one per press.
+constexpr uint32_t SETTINGS_SAVE_DELAY_MS = 3000;
+
+// Terrarium controls. The values are indices into hw.switches[] (terrarium.h).
+constexpr int LINE_COUNT_SWITCH    = Terrarium::SWITCH_1;  // off = 2 lines, on = preset max
+constexpr int BLOOM_SWITCH         = Terrarium::SWITCH_2;  // reverse multitap gain order
+constexpr int REVERSE_ON_SWITCH    = Terrarium::SWITCH_3;  // reverse voice on/off
+constexpr int REVERSE_ROUTE_SWITCH = Terrarium::SWITCH_4;  // off = into reverb, on = direct mix
+constexpr int BYPASS_FOOTSWITCH    = Terrarium::FOOTSWITCH_1;
+constexpr int PRESET_FOOTSWITCH    = Terrarium::FOOTSWITCH_2;
 
 // LED blink pattern configuration (defined early for use in preset config)
 struct BlinkPattern {
@@ -75,11 +73,11 @@ struct BlinkPattern {
 
 // Blink state machine
 struct BlinkState {
-    bool active;
-    int currentBlink;
-    bool ledOn;
-    uint32_t lastTransitionTime;
-    BlinkPattern pattern;
+    bool         active             = false;
+    int          currentBlink       = 0;
+    bool         ledOn              = false;
+    uint32_t     lastTransitionTime = 0;
+    BlinkPattern pattern            = {};
 };
 
 // Presets are defined in presets.toml, embedded into the firmware image by
@@ -96,7 +94,7 @@ static PresetFootswitch gPresetFs;
 // Persistent Settings
 struct Settings {
     int version;        // Version of the settings struct
-    int currentPreset;  // Currently selected preset (0-9)
+    int currentPreset;  // 0 .. gPresets.count-1
     bool bypass;         // Persisted bypass state (true = pedal was bypassed at last save)
 
     // Overloading the != operator
@@ -110,40 +108,42 @@ struct Settings {
     }
 };
 
+static bool     gSettingsSavePending = false;  // RAM copy differs from what was last saved
+static uint32_t gSettingsChangedAtMs = 0;      // System::GetNow() of the last change
+
 // Global state structure
 struct PedalState {
-    // Previous parameter values (for change detection)
-    int   prevReverseGrainSamples;  // last window length written to reverseDelay
-    float prevNumDelayLines;
-    bool prevReverseTaps;
+    // Shared with the main loop (volatile). The audio callback interrupts the main
+    // loop, so these must be re-read from memory on every access.
+    volatile bool bypass                 = true;
+    volatile bool triggerPresetChange    = false;  // set by the callback on an FS2 tap
+    volatile bool presetChangeInProgress = false;  // main loop is loading a preset: pass through
+    volatile bool knobResetPending       = false;  // main loop changed the preset; re-snapshot knobs
+    int currentPreset = 0;  // main loop only
 
-    // State
-    bool bypass;
-    int currentPreset;
-    bool triggerPresetChange;    // Set true in audio callback when preset switch pressed
-    bool triggerBypassSave;      // Set true in audio callback when bypass is toggled
-    bool triggerSettingsSave;    // Set true when settings need to be saved
-    bool triggerPresetBlink;     // Set true when we should blink LED to show preset
-    bool presetChangeInProgress; // Set true while preset is being changed (prevents audio processing)
-    bool reverseTaps;
-    bool  reverseDelayOn;  // SWITCH_3 state, sampled each callback
-    float reverseMix;      // smoothed 0..1 crossfade for the reverse voice
-    float samplesPerMs;    // sampleRate / 1000, precomputed for the reverse-time knob
+    // Active preset configuration, written only while presetChangeInProgress (or
+    // before audio starts) by loadPreset(). The audio callback and the blink state
+    // machine read these, never gPresets.
+    KnobTarget   knobMap[kKnobBanks][kKnobCount] = {};
+    float        maxDelayLines = 0.0f;
+    BlinkPattern blinkPattern  = {};
+    bool         outputLevelsDirty = true;  // DryOut/EarlyOut/MainOut changed
 
-    // Active preset configuration, copied by loadPreset(). The audio callback and
-    // the blink state machine read these, never gPresets.
-    KnobTarget   knobMap[kKnobBanks][kKnobCount];
-    float        maxDelayLines;
-    BlinkPattern blinkPattern;
-
+    // Audio callback only.
+    float prevNumDelayLines       = 0.0f;   // 0 forces the first callback to write LineCount
+    bool  prevBloom               = false;
+    int   prevReverseGrainSamples = 0;      // last window length written to reverseDelay
+    float reverseDelayNorm = REVERSE_GRAIN_NORM; // normalized reverse-window value; the current
+                                                 // value of the "reverse.delay" target, which
+                                                 // has no params[] slot
+    float reverseMix   = 0.0f;  // smoothed 0..1 crossfade for the reverse voice
+    float samplesPerMs = 0.0f;  // sampleRate / 1000, precomputed for the reverse-time knob
     // Derived from DryOut/EarlyOut/MainOut; recomputed only when those change.
-    bool  outputLevelsDirty;
-    float makeupGain;
-    float scaledDryOut;
+    float makeupGain   = OUTPUT_VOLUME_BOOST;
+    float scaledDryOut = 0.0f;
 
-    float reverseDelayNorm; // normalized reverse-window value; the current value of
-                            // the "reverse.delay" target, which has no params[] slot
-    bool knobResetPending; // main loop changed the preset; re-snapshot knob positions
+    // Once audio runs, only the callback calls Update(): Led::Update() is a
+    // read-modify-write and would race with the main loop.
     Led led1;
     Led led2;
 };
@@ -154,47 +154,55 @@ static const int kKnobIndex[kKnobCount] = {
     Terrarium::KNOB_4, Terrarium::KNOB_5, Terrarium::KNOB_6};
 
 // Declare a local daisy_petal for hardware access
-DaisyPetal hw;
-PedalState state;
-CloudSeed::ReverbController* reverb = nullptr;
-CloudSeed::ReverseDelay reverseDelay;
+static DaisyPetal hw;
+static PedalState state;
+static CloudSeed::ReverbController* reverb = nullptr;
+static CloudSeed::ReverseDelay reverseDelay;
 
 // Persistent Storage Declaration. Using type Settings and passed the device's qspi handle
-PersistentStorage<Settings> SavedSettings(hw.seed.qspi);
+static PersistentStorage<Settings> SavedSettings(hw.seed.qspi);
 
-BlinkState led2BlinkState = {false, 0, false, 0, {0, 0, 0, 0}};
+static BlinkState led2BlinkState;
+
+// Unrecoverable boot failure (preset parse, SDRAM pool exhausted, unexpected audio
+// block size). Blink both LEDs at 5 Hz forever and never start audio, so the failure
+// is unmistakable on the pedal. Runs before any audio callback, so it drives the LEDs
+// itself.
+[[noreturn]] static void fatalErrorLoop() {
+    while (true) {
+        state.led1.Set(1.0f); state.led2.Set(1.0f);
+        state.led1.Update(); state.led2.Update();
+        System::Delay(100);
+        state.led1.Set(0.0f); state.led2.Set(0.0f);
+        state.led1.Update(); state.led2.Update();
+        System::Delay(100);
+    }
+}
 
 /*
  * Memory pool for delay lines
  */
 
+static constexpr size_t alignUp8(size_t n) {
+    return (n + 7u) & ~static_cast<size_t>(7u);
+}
+
 // This is used in the modified CloudSeed code for allocating
 // delay line memory to SDRAM (64MB available on Daisy)
-#define CUSTOM_POOL_SIZE (48*1024*1024)
-DSY_SDRAM_BSS char custom_pool[CUSTOM_POOL_SIZE];
-DSY_SDRAM_BSS float reverseDelayBuffer[REVERSE_BUFFER_SIZE];
-size_t pool_index = 0;
-int allocation_count = 0;
+constexpr size_t CUSTOM_POOL_SIZE = 48u * 1024u * 1024u;
+DSY_SDRAM_BSS __attribute__((aligned(32))) static char custom_pool[CUSTOM_POOL_SIZE];
+DSY_SDRAM_BSS static float reverseDelayBuffer[REVERSE_BUFFER_SIZE];
+static size_t pool_index = 0;
+
+// Bump allocator, no free. Returns 8-byte aligned blocks. Declared extern by the
+// CloudSeed headers, so the signature and external linkage must stay as they are.
 void* custom_pool_allocate(size_t size) {
-    if (pool_index + size >= CUSTOM_POOL_SIZE) {
-        // Memory pool exhausted - this should never happen during normal operation
-        // If this occurs, it indicates a serious memory allocation issue
-        // Returning NULL will likely cause a crash, but it's better than silent corruption
-        return 0;
-    }
+    const size_t aligned = alignUp8(size);
+    if (aligned > CUSTOM_POOL_SIZE - pool_index)
+        fatalErrorLoop();  // callers placement-new into the result; 0x0 is ITCMRAM on the H750
     void* ptr = &custom_pool[pool_index];
-    pool_index += size;
-    allocation_count++;
+    pool_index += aligned;
     return ptr;
-}
-
-// Helper to get memory pool usage statistics
-size_t get_pool_usage() {
-    return pool_index;
-}
-
-size_t get_pool_remaining() {
-    return CUSTOM_POOL_SIZE - pool_index;
 }
 
 /*
@@ -204,13 +212,12 @@ size_t get_pool_remaining() {
 // Carved from the head of custom_pool. Nothing else has allocated from the pool
 // yet (the reverb is constructed afterwards), so the whole region is handed back
 // simply by abandoning it. The heap is deliberately avoided: libnosys' _sbrk
-// grows unchecked from end = 0x30008000 into the 256 KB RAM_D2 region, and
-// custom_pool_allocate() does not align its returns.
+// grows unchecked from end = 0x30008000 into the 256 KB RAM_D2 region.
 constexpr size_t TOML_ARENA_SIZE = 512 * 1024;
 static size_t toml_arena_index = 0;
 
 static void* toml_arena_alloc(size_t size) {
-    const size_t aligned = (size + 7u) & ~static_cast<size_t>(7u);
+    const size_t aligned = alignUp8(size);
     if (toml_arena_index + aligned > TOML_ARENA_SIZE) return nullptr;
     void* ptr = &custom_pool[toml_arena_index];
     toml_arena_index += aligned;
@@ -231,24 +238,11 @@ static bool loadPresetBank(char* err, int errLen) {
     return ok;
 }
 
-// Unrecoverable: no presets means no reverb configuration. Blink both LEDs at 5 Hz
-// forever and never start audio, so the failure is unmistakable on the pedal.
-static void presetErrorLoop() {
-    while (true) {
-        state.led1.Set(1.0f); state.led2.Set(1.0f);
-        state.led1.Update(); state.led2.Update();
-        System::Delay(100);
-        state.led1.Set(0.0f); state.led2.Set(0.0f);
-        state.led1.Update(); state.led2.Update();
-        System::Delay(100);
-    }
-}
-
 /*
  * Presets
  */
 
-void loadPreset(int presetIndex) {
+static void loadPreset(int presetIndex) {
     // Validate preset index
     if (presetIndex < 0 || presetIndex >= gPresets.count) {
         presetIndex = 0;  // Default to first preset if invalid
@@ -268,59 +262,44 @@ void loadPreset(int presetIndex) {
     state.outputLevelsDirty = true;
 }
 
-/*
- * Persistent settings
- */
-
-void loadSettings() {
-    // Reference to local copy of settings stored in flash
-    Settings &localSettings = SavedSettings.GetSettings();
-
-    int savedVersion = localSettings.version;
-
-    if (savedVersion != SETTINGS_VERSION) {
-        // Something has changed. Load defaults!
-        SavedSettings.RestoreDefaults();
-        loadSettings();
-        return;
-    }
-
-    // Load and validate the preset
-    state.currentPreset = localSettings.currentPreset;
-
-    // Validate preset range and default to 0 if invalid
-    if (state.currentPreset < 0 || state.currentPreset >= gPresets.count) {
-        state.currentPreset = 0;
-    }
-
-    // Load bypass state (no range validation needed: bool has no invalid values
-    // once the SETTINGS_VERSION check above guarantees a freshly-defaulted struct
-    // on any layout mismatch)
-    state.bypass = localSettings.bypass;
-
-    loadPreset(state.currentPreset);
-}
-
-void saveSettings() {
-    // Reference to local copy of settings stored in flash
-    Settings &localSettings = SavedSettings.GetSettings();
-
-    localSettings.version = SETTINGS_VERSION;
-    localSettings.currentPreset = state.currentPreset;
-    localSettings.bypass = state.bypass;
-
-    state.triggerSettingsSave = true;
-}
-
-void cyclePreset() {
+static void cyclePreset() {
     state.currentPreset = (state.currentPreset + 1) % gPresets.count;
     loadPreset(state.currentPreset);
 }
 
+/*
+ * Persistent settings
+ */
 
-// Helper function to check if float values differ significantly
-inline bool hasChanged(float prev, float current) {
-    return (prev < current - FLOAT_EPSILON) || (prev > current + FLOAT_EPSILON);
+static void loadSettings() {
+    // A layout change (SETTINGS_VERSION mismatch) discards the stored struct.
+    if (SavedSettings.GetSettings().version != SETTINGS_VERSION)
+        SavedSettings.RestoreDefaults();
+
+    const Settings& s = SavedSettings.GetSettings();
+    state.currentPreset =
+        (s.currentPreset >= 0 && s.currentPreset < gPresets.count) ? s.currentPreset : 0;
+    state.bypass = s.bypass;
+    loadPreset(state.currentPreset);
+}
+
+// Main loop only. Mirrors pedal state into the RAM copy of the settings and writes
+// flash SETTINGS_SAVE_DELAY_MS after the last change, so a burst of preset/bypass
+// changes costs one QSPI sector erase. Save() skips the erase entirely when flash
+// already matches (PersistentStorage::StoreSettingsIfChanged).
+static void serviceSettingsSave() {
+    Settings&  s      = SavedSettings.GetSettings();
+    const bool bypass = state.bypass;
+    if (s.currentPreset != state.currentPreset || s.bypass != bypass) {
+        s.currentPreset      = state.currentPreset;
+        s.bypass             = bypass;
+        gSettingsSavePending = true;
+        gSettingsChangedAtMs = System::GetNow();
+    }
+    if (gSettingsSavePending && System::GetNow() - gSettingsChangedAtMs >= SETTINGS_SAVE_DELAY_MS) {
+        SavedSettings.Save();
+        gSettingsSavePending = false;
+    }
 }
 
 // Antilog reverse-window mapping via the same ValueTables pattern the engine uses for
@@ -377,32 +356,46 @@ static void applyKnobTarget(const KnobTarget& target, float value) {
 static float knobTargetValue(const KnobTarget& target) {
     if (target.kind == KnobTarget_ReverseDelay)
         return state.reverseDelayNorm;
-    return reverb->GetAllParameters()[target.paramIndex];
+    const float* params = reverb->GetAllParameters();
+    // A disabled input filter is heard as fully open, and applyKnobTarget() enables
+    // it on the first write, so the takeover glide must start from the open end, not
+    // from the stored cutoff.
+    switch ((::Parameter)target.paramIndex) {
+    case ::Parameter::HighPass:
+        if (params[(int)::Parameter::HiPassEnabled] < 0.5f)
+            return 0.0f;
+        break;
+    case ::Parameter::LowPass:
+        if (params[(int)::Parameter::LowPassEnabled] < 0.5f)
+            return 1.0f;
+        break;
+    default:
+        break;
+    }
+    return params[target.paramIndex];
 }
 
 /*
  * LED blink
  */
 
-// Start a blink sequence
-void startBlinkSequence(BlinkPattern pattern) {
+// Start a blink sequence. LED2 itself is pushed to the pin by the audio callback.
+static void startBlinkSequence(const BlinkPattern& pattern) {
     led2BlinkState.active = true;
     led2BlinkState.currentBlink = 0;
     led2BlinkState.ledOn = false;
     led2BlinkState.lastTransitionTime = System::GetNow();
     led2BlinkState.pattern = pattern;
     state.led2.Set(0.0f);
-    state.led2.Update();
 }
 
 // Update blink state machine (call this in main loop)
-void updateBlinkState() {
+static void updateBlinkState() {
     // If bypassed, turn off LED2 and deactivate blinking
     if (state.bypass) {
         if (led2BlinkState.active) {
             led2BlinkState.active = false;
             state.led2.Set(0.0f);
-            state.led2.Update();
         }
         return;
     }
@@ -420,7 +413,6 @@ void updateBlinkState() {
         // LED is currently on, check if it's time to turn it off
         if (elapsed >= led2BlinkState.pattern.onDurationMs) {
             state.led2.Set(0.0f);
-            state.led2.Update();
             led2BlinkState.ledOn = false;
             led2BlinkState.lastTransitionTime = now;
             led2BlinkState.currentBlink++;
@@ -439,7 +431,6 @@ void updateBlinkState() {
             // More blinks to go, check if it's time to turn LED on again
             if (elapsed >= led2BlinkState.pattern.offDurationMs) {
                 state.led2.Set(1.0f);
-                state.led2.Update();
                 led2BlinkState.ledOn = true;
                 led2BlinkState.lastTransitionTime = now;
             }
@@ -451,212 +442,210 @@ void updateBlinkState() {
  * Main audio callback
  */
 
-// This runs at a fixed rate, to prepare audio samples
-static void audioCallback(AudioHandle::InputBuffer  in,
-                          AudioHandle::OutputBuffer out,
-                          size_t                    size) {
+// Audio buffers, shared by both render paths. main() guarantees the hardware block
+// size equals AUDIO_BUFFER_SIZE.
+static float gInputBuffer[AUDIO_BUFFER_SIZE];
+static float gWetBuffer[AUDIO_BUFFER_SIZE];
+static float gReverseBuffer[AUDIO_BUFFER_SIZE];
+static float gReverbInputBuffer[AUDIO_BUFFER_SIZE];
 
-    // Audio buffers
-    static float audioInputBuffer[AUDIO_BUFFER_SIZE];
-    static float audioOutputBuffer[AUDIO_BUFFER_SIZE];
-    static float reverseOutputBuffer[AUDIO_BUFFER_SIZE];
-    static float reverbInputBuffer[AUDIO_BUFFER_SIZE];
-
-    hw.ProcessAnalogControls();
-    hw.ProcessDigitalControls();
-    state.led1.Update();
-    state.led2.Update();
-
-    //
-    // Process footswitches
-    //
-
+static void processFootswitches() {
     // Each accessor is read exactly once per callback: libdaisy's edge flags are only
     // valid for the update in which they occur (hid/switch.h:62-66).
 
     // (De-)Activate bypass and toggle LED when the left footswitch is released
-    if (hw.switches[Terrarium::FOOTSWITCH_1].FallingEdge()) {
+    if (hw.switches[BYPASS_FOOTSWITCH].FallingEdge()) {
         state.bypass = !state.bypass;
         state.led1.Set(state.bypass ? 0.0f : 1.0f);
-        state.triggerBypassSave = true;
     }
 
     // Holding the preset footswitch is the secondary-bank gesture. Its release cycles
     // the preset (actual change happens in the main loop) only if no secondary knob
     // wrote a value during the hold.
-    if (gPresetFs.Update(hw.switches[Terrarium::FOOTSWITCH_2].Pressed(),
-                         hw.switches[Terrarium::FOOTSWITCH_2].FallingEdge())) {
+    if (gPresetFs.Update(hw.switches[PRESET_FOOTSWITCH].Pressed(),
+                         hw.switches[PRESET_FOOTSWITCH].FallingEdge())) {
         state.triggerPresetChange = true;
     }
+}
 
-    //
-    // Process knobs and toggle switches
-    //
+// Every reverb write lives here, and the caller skips it while the main loop is
+// loading a preset: it is rewriting state.knobMap and all 47 engine parameters at the
+// same time. The knob re-park is gated for the same reason (it must not straddle a
+// knobMap rewrite); knobResetPending simply stays set until the load completes.
+static void updateEngineControls(int bank, const float* knobPositions) {
+    // Any bank or preset transition re-parks every knob (knob_bank.h): a knob
+    // writes nothing until it is turned, then glides its target to the pot's
+    // position over kKnobGlideBlocks blocks and tracks it from there.
+    float knobCurrent[kKnobCount];
+    for (int i = 0; i < kKnobCount; i++)
+        knobCurrent[i] = knobTargetValue(state.knobMap[bank][i]);
 
-    const bool reverseTaps = hw.switches[BLOOM_SWITCH].Pressed();
+    KnobWrite knobWrites[kKnobCount];
+    const int knobWriteCount = gKnobs.Scan(
+        bank, state.knobResetPending, knobPositions, knobCurrent, knobWrites);
+    state.knobResetPending = false;
+    for (int w = 0; w < knobWriteCount; w++)
+        applyKnobTarget(state.knobMap[bank][knobWrites[w].knob], knobWrites[w].value);
+
+    // A secondary knob that wrote during this hold turns the FS2 release into a
+    // no-op. Entering bank 1 re-parks (zero writes), so the press itself never counts.
+    if (bank == 1 && knobWriteCount > 0)
+        gPresetFs.MarkEdited();
+
+    // SWITCH_1: off = 2 delay lines, on = the preset's max. Both candidates are exact
+    // copies, so != is an exact change test.
+    const float numDelayLines = hw.switches[LINE_COUNT_SWITCH].Pressed()
+        ? state.maxDelayLines
+        : 2.0f;
+    if (numDelayLines != state.prevNumDelayLines) {
+        reverb->SetParameter(::Parameter::LineCount, numDelayLines);
+        state.prevNumDelayLines = numDelayLines;
+    }
+
+    // SWITCH_2: Bloom (reverse multitap gain order)
+    const bool bloom = hw.switches[BLOOM_SWITCH].Pressed();
+    if (bloom != state.prevBloom) {
+        reverb->SetParameter(::Parameter::isReverse, bloom ? 1.0f : 0.0f);
+        state.prevBloom = bloom;
+    }
+}
+
+// Makeup gain and the dry-cancellation scale depend only on the three output
+// levels, so they are derived when those change, not once per block.
+static void refreshOutputLevels() {
+    if (!state.outputLevelsDirty)
+        return;
+    const float* levels        = reverb->GetAllParameters();
+    const float  dryOutValue   = levels[(int)::Parameter::DryOut];
+    const float  earlyOutValue = levels[(int)::Parameter::EarlyOut];
+    const float  mainOutValue  = levels[(int)::Parameter::MainOut];
+    const float  totalSignal   = dryOutValue + earlyOutValue + mainOutValue
+                                 + FLOAT_EPSILON;
+    const float  wetBalance    = (earlyOutValue + mainOutValue) / totalSignal;
+    const float  compensation  = sinf(wetBalance * HALF_PI);
+    state.makeupGain   = OUTPUT_VOLUME_BOOST
+                         * (1.0f + compensation * MAKEUP_GAIN_STRENGTH);
+    state.scaledDryOut = reverb->GetScaledParameter(::Parameter::DryOut);
+    state.outputLevelsDirty = false;
+}
+
+// SWITCH_4 off: reverse the dry guitar and inject it into the reverb input.
+// The reverb re-emits dryOut*(dry+injectedReverse); we subtract
+// dryOut*injectedReverse at the output so the dry pass-through stays the
+// clean, non-reversed guitar and the reverse is heard only through the wet
+// tail. With early/late at zero the reverb adds nothing, so no reverse plays.
+static void renderReverseIntoReverb(float reverseTarget, float* out) {
+    reverseDelay.Process(gInputBuffer, gReverseBuffer, AUDIO_BUFFER_SIZE);
+    float mix = state.reverseMix;
+    for (size_t i = 0; i < AUDIO_BUFFER_SIZE; i++) {
+        mix += (reverseTarget - mix) * REVERSE_MIX_SMOOTHING;
+        const float injected = gReverseBuffer[i] * REVERSE_LEVEL * mix;
+        gReverseBuffer[i]     = injected;  // retained for dry-pass-through cancellation
+        gReverbInputBuffer[i] = gInputBuffer[i] + injected;
+    }
+    state.reverseMix = mix;
+
+    reverb->Process(gReverbInputBuffer, gWetBuffer, AUDIO_BUFFER_SIZE);
+
+    const float dry  = state.scaledDryOut;
+    const float gain = state.makeupGain;
+    for (size_t i = 0; i < AUDIO_BUFFER_SIZE; i++)
+        out[i] = (gWetBuffer[i] - dry * gReverseBuffer[i]) * gain;
+}
+
+// SWITCH_4 on: the reverse records the reverb output and its reversed copy is mixed
+// straight into the output (reverse audible on its own).
+static void renderReverseDirect(float reverseTarget, float* out) {
+    reverb->Process(gInputBuffer, gWetBuffer, AUDIO_BUFFER_SIZE);
+    reverseDelay.Process(gWetBuffer, gReverseBuffer, AUDIO_BUFFER_SIZE);
+
+    float       mix  = state.reverseMix;
+    const float gain = state.makeupGain;
+    for (size_t i = 0; i < AUDIO_BUFFER_SIZE; i++) {
+        mix += (reverseTarget - mix) * REVERSE_MIX_SMOOTHING;
+        out[i] = (gWetBuffer[i] + gReverseBuffer[i] * REVERSE_LEVEL * mix) * gain;
+    }
+    state.reverseMix = mix;
+}
+
+// This runs at a fixed rate, to prepare audio samples
+static void audioCallback(AudioHandle::InputBuffer  in,
+                          AudioHandle::OutputBuffer out,
+                          size_t                    /*size*/) {
+    hw.ProcessAnalogControls();
+    hw.ProcessDigitalControls();
+    state.led1.Update();
+    state.led2.Update();
+    processFootswitches();
+
+    // The main loop cannot run while this callback does, so read each shared flag once.
+    const bool bypass = state.bypass;
+    if (state.presetChangeInProgress) {  // main loop is loading a preset: pass through
+        memcpy(out[0], in[0], AUDIO_BUFFER_SIZE * sizeof(float));
+        return;
+    }
+
+    float knobPositions[kKnobCount];
+    for (int i = 0; i < kKnobCount; i++)
+        knobPositions[i] = hw.knob[kKnobIndex[i]].Value();
+    // Holding the preset footswitch selects bank 1 until its release edge.
+    updateEngineControls(gPresetFs.Held() ? 1 : 0, knobPositions);
+    refreshOutputLevels();
 
     // SWITCH_3: reverse voice on/off. The reverse window length is a knob_map
     // target ("reverse.delay"), not a SWITCH_3 overload of KNOB_4.
-    state.reverseDelayOn = hw.switches[Terrarium::SWITCH_3].Pressed();
-
-    float knobValues[kKnobCount];
-    for (int i = 0; i < kKnobCount; i++)
-        knobValues[i] = hw.knob[kKnobIndex[i]].Value();
-
-    // Holding the preset footswitch selects bank 1 until its release edge.
-    const int bank = gPresetFs.held ? 1 : 0;
-
-    // Every reverb write is skipped while the main loop is loading a preset: it is
-    // rewriting state.knobMap and all 47 engine parameters at the same time. The
-    // re-park below is gated for the same reason (it must not straddle a knobMap
-    // rewrite); knobResetPending simply stays set until the load completes.
-    if (!state.presetChangeInProgress) {
-        // Any bank or preset transition re-parks every knob (knob_bank.h): a knob
-        // writes nothing until it is turned, then glides its target to the pot's
-        // position over kKnobGlideBlocks blocks and tracks it from there.
-        float knobCurrent[kKnobCount];
-        for (int i = 0; i < kKnobCount; i++)
-            knobCurrent[i] = knobTargetValue(state.knobMap[bank][i]);
-
-        KnobWrite knobWrites[kKnobCount];
-        const int knobWriteCount = gKnobs.Scan(
-            bank, state.knobResetPending, knobValues, knobCurrent, knobWrites);
-        state.knobResetPending = false;
-        for (int w = 0; w < knobWriteCount; w++)
-            applyKnobTarget(state.knobMap[bank][knobWrites[w].knob], knobWrites[w].value);
-
-        // A secondary knob that wrote during this hold turns the FS2 release into a
-        // no-op. Entering bank 1 re-parks (zero writes), so the press itself never counts.
-        if (bank == 1 && knobWriteCount > 0)
-            gPresetFs.edited = true;
-
-        // SWITCH_1: off = 2 delay lines, on = the preset's max
-        const float numDelayLines = hw.switches[Terrarium::SWITCH_1].Pressed()
-            ? state.maxDelayLines
-            : 2.0f;
-
-        if (hasChanged(state.prevNumDelayLines, numDelayLines)) {
-            reverb->SetParameter(::Parameter::LineCount, numDelayLines);
-            state.prevNumDelayLines = numDelayLines;
-        }
-
-        // Process Bloom/Reverse tap switch
-        if (state.prevReverseTaps != reverseTaps) {
-            reverb->SetParameter(::Parameter::isReverse, reverseTaps ? 1.0f : 0.0f);
-            state.prevReverseTaps = reverseTaps;
-        }
-    }
-
-    // SWITCH_4: reverse destination (off = into reverb wet path; on = direct output mix)
-    const bool reverseIntoReverb = !hw.switches[Terrarium::SWITCH_4].Pressed();
-
-
-
-    //
-    // Process audio
-    //
-
-    // Copy input to buffers
-    for (size_t i = 0; i < size; i++) {
-        audioInputBuffer[i] = in[0][i]; // left channel
-    }
-
-    // Apply effect or bypass
-    // IMPORTANT: Skip reverb processing if preset change is in progress to avoid race condition
-    // We want to compute our reverb output even when bypassed to minimize 1khz whine
-    if (!state.presetChangeInProgress) {
-        const float reverseTarget = state.reverseDelayOn ? 1.0f : 0.0f;
-
-        // Makeup gain and the dry-cancellation scale depend only on the three output
-        // levels, so they are derived when those change, not once per block.
-        if (state.outputLevelsDirty) {
-            const float* levels        = reverb->GetAllParameters();
-            const float  dryOutValue   = levels[(int)::Parameter::DryOut];
-            const float  earlyOutValue = levels[(int)::Parameter::EarlyOut];
-            const float  mainOutValue  = levels[(int)::Parameter::MainOut];
-            const float  totalSignal   = dryOutValue + earlyOutValue + mainOutValue
-                                         + FLOAT_EPSILON;
-            const float  wetBalance    = (earlyOutValue + mainOutValue) / totalSignal;
-            const float  compensation  = sinf(wetBalance * M_PI_2);
-            state.makeupGain   = OUTPUT_VOLUME_BOOST
-                                 * (1.0f + compensation * MAKEUP_GAIN_STRENGTH);
-            state.scaledDryOut = reverb->GetScaledParameter(::Parameter::DryOut);
-            state.outputLevelsDirty = false;
-        }
-        const float makeupGain = state.makeupGain;
-
-        if (reverseIntoReverb) {
-            // SWITCH_4 off: reverse the dry guitar and inject it into the reverb input.
-            // The reverb re-emits dryOut*(dry+injectedReverse); we subtract
-            // dryOut*injectedReverse at the output so the dry pass-through stays the
-            // clean, non-reversed guitar and the reverse is heard only through the wet
-            // tail. With early/late at zero the reverb adds nothing, so no reverse plays.
-            reverseDelay.Process(audioInputBuffer, reverseOutputBuffer, AUDIO_BUFFER_SIZE);
-            for (size_t i = 0; i < AUDIO_BUFFER_SIZE; i++) {
-                state.reverseMix += (reverseTarget - state.reverseMix) * REVERSE_MIX_SMOOTHING;
-                float injectedReverse = reverseOutputBuffer[i] * REVERSE_LEVEL * state.reverseMix;
-                reverseOutputBuffer[i] = injectedReverse; // retained for dry-pass-through cancellation
-                reverbInputBuffer[i]   = audioInputBuffer[i] + injectedReverse;
-            }
-            reverb->Process(reverbInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
-            const float scaledDryOut = state.scaledDryOut;
-
-            for (size_t i = 0; i < size; i++) {
-                if (state.bypass) {
-                    out[0][i] = in[0][i];
-                }
-                else {
-                    out[0][i] = (audioOutputBuffer[i] - scaledDryOut * reverseOutputBuffer[i]) * makeupGain;
-                }
-            }
-        }
-        else {
-            // SWITCH_4 on: today's behavior — reverse records the reverb output and its
-            // reversed copy is mixed straight into the output (reverse audible on its own).
-            reverb->Process(audioInputBuffer, audioOutputBuffer, AUDIO_BUFFER_SIZE);
-            reverseDelay.Process(audioOutputBuffer, reverseOutputBuffer, AUDIO_BUFFER_SIZE);
-
-            for (size_t i = 0; i < size; i++) {
-                state.reverseMix += (reverseTarget - state.reverseMix) * REVERSE_MIX_SMOOTHING;
-                if (state.bypass) {
-                    out[0][i] = in[0][i];
-                }
-                else {
-                    float wet = audioOutputBuffer[i] * makeupGain;
-                    float rev = reverseOutputBuffer[i] * makeupGain * REVERSE_LEVEL * state.reverseMix;
-                    out[0][i] = wet + rev;
-                }
-            }
-        }
-    } else { // Preset change in progress, bypass audio to avoid race condition
-        for (size_t i = 0; i < size; i++) {
-            out[0][i] = in[0][i];
-        }
-    }
+    const float reverseTarget = hw.switches[REVERSE_ON_SWITCH].Pressed() ? 1.0f : 0.0f;
+    memcpy(gInputBuffer, in[0], AUDIO_BUFFER_SIZE * sizeof(float));  // left channel
+    // The reverb runs even when bypassed: that suppresses an audible 1 kHz whine.
+    if (hw.switches[REVERSE_ROUTE_SWITCH].Pressed())
+        renderReverseDirect(reverseTarget, out[0]);
+    else
+        renderReverseIntoReverb(reverseTarget, out[0]);
+    if (bypass)
+        memcpy(out[0], in[0], AUDIO_BUFFER_SIZE * sizeof(float));
 }
 
 /*
  * Main loop
  */
 
+// Main-loop busy work. Keeps the FPU and the load/store path active between audio
+// callbacks instead of letting the core idle, which audibly reduces a 1 kHz whine.
+// The phase is volatile, so every pass performs a real load, a real sinf() on the FPU
+// and two real stores; a constant argument would be folded away at compile time.
+static volatile float gBusyPhase = 0.0f;
+static volatile float gBusySink  = 0.0f;
+
+static void keepCoreBusy() {
+    float phase = gBusyPhase + 0.001f;
+    if (phase >= TWO_PI)
+        phase -= TWO_PI;
+    gBusyPhase = phase;
+    gBusySink  = sinf(phase);
+}
+
 int main(void) {
     __set_FPSCR(__get_FPSCR() | (1u << 24)); // FZ: flush denormals to zero in hardware
     hw.Init();
 
-    // LEDs first: presetErrorLoop() below is the only way a parse failure can be
-    // reported on the pedal.
+    // LEDs first: fatalErrorLoop() is the only way a boot failure can be reported
+    // on the pedal.
     state.led1.Init(hw.seed.GetPin(Terrarium::LED_1), false);
     state.led1.Update();
 
     state.led2.Init(hw.seed.GetPin(Terrarium::LED_2), false);
     state.led2.Update();
 
+    // Every callback loop and buffer is sized by AUDIO_BUFFER_SIZE.
+    if (hw.AudioBlockSize() != AUDIO_BUFFER_SIZE)
+        fatalErrorLoop();
+
     // Parse the embedded presets.toml. SDRAM is only usable after hw.Init(), and
     // the ReverbController below is the first consumer of custom_pool, so the
     // scratch arena window is exactly here.
     char presetErr[128];
     if (!loadPresetBank(presetErr, sizeof presetErr))
-        presetErrorLoop();
+        fatalErrorLoop();
 
     const float sampleRate = hw.AudioSampleRate();
 
@@ -664,41 +653,21 @@ int main(void) {
     AudioLib::ValueTables::Init();
     CloudSeed::FastSin::Init();
 
-    // Initialize reverb controller
+    // Initialize reverb controller (loadSettings() below clears and loads a preset)
     reverb = new CloudSeed::ReverbController(sampleRate);
-    reverb->ClearBuffers();
 
-    // Initialize reverse delay stage (records dry input or reverb output for backward playback)
+    // Initialize reverse delay stage (records dry input or reverb output for backward
+    // playback). Init() clears the buffer.
     const int bootGrainSamples =
         (int)(sampleRate * reverseWindowMs(REVERSE_GRAIN_NORM) / 1000.0f);
     reverseDelay.Init(reverseDelayBuffer, REVERSE_BUFFER_SIZE, bootGrainSamples);
-    reverseDelay.ClearBuffers();
+    state.samplesPerMs            = sampleRate / 1000.0f;
+    state.prevReverseGrainSamples = bootGrainSamples;
 
     // Give the knobs real ADC smoothing: libdaisy's default slew computes to a
     // pass-through at this callback rate (see hid/ctrl.cpp:16).
     for (int i = 0; i < kKnobCount; i++)
         hw.knob[kKnobIndex[i]].SetCoeff(KNOB_SMOOTHING_COEFF);
-
-    // Initialize previous parameter values
-    state.prevReverseGrainSamples = bootGrainSamples;
-    state.prevNumDelayLines = 0.0f; // Let the audio callback capture the real value of active lines
-    state.prevReverseTaps = false;
-
-    // Initialize state
-    state.bypass = true;
-    state.triggerPresetChange = false;
-    state.triggerBypassSave = false;
-    state.triggerSettingsSave = false;
-    state.triggerPresetBlink = false;
-    state.presetChangeInProgress = false;
-    state.reverseDelayOn = false;
-    state.reverseMix = 0.0f;
-    state.samplesPerMs = sampleRate / 1000.0f;
-    state.reverseDelayNorm = REVERSE_GRAIN_NORM;
-    state.knobResetPending = false;
-    state.outputLevelsDirty = true;
-    state.makeupGain        = OUTPUT_VOLUME_BOOST;
-    state.scaledDryOut      = 0.0f;
 
     // Initialize persistent storage with default settings
     Settings defaultSettings = {
@@ -733,48 +702,28 @@ int main(void) {
     hw.StartAudio(audioCallback);
 
     while (true) {
-        // Handle preset changes (moved from audio callback for better performance)
+        // Preset changes run here, not in the audio callback. The callback passes
+        // audio through while presetChangeInProgress is set, so it never sees a
+        // half-loaded preset; loadPreset() is synchronous, so the gate reopens as soon
+        // as it returns.
         if (state.triggerPresetChange) {
-            state.triggerPresetChange = false;
-
-            // Set flag to prevent audio processing during preset change
-            // This prevents race condition where audio callback tries to process
-            // while buffers are being cleared/modified
+            state.triggerPresetChange    = false;
             state.presetChangeInProgress = true;
-
             // Park the knobs before the load so no callback during it can push a
             // stale position into the incoming preset.
-            state.knobResetPending = true;
+            state.knobResetPending       = true;
+            std::atomic_signal_fence(std::memory_order_seq_cst);  // gate closed before any preset write
             cyclePreset();
-            saveSettings();
             startBlinkSequence(state.blinkPattern);
-
-            // Small delay to ensure all buffers are fully initialized
-            // before audio processing resumes
-            System::Delay(10);
-
-            state.presetChangeInProgress = false; // Re-enable audio processing
+            std::atomic_signal_fence(std::memory_order_seq_cst);  // preset fully written before reopening
+            state.presetChangeInProgress = false;
         }
 
-        // Handle bypass persistence (moved from audio callback for better performance,
-        // same deferred-write pattern as preset changes above)
-        if (state.triggerBypassSave) {
-            state.triggerBypassSave = false;
-            saveSettings();
-        }
-
-        // Handle settings save (moved from audio callback for better performance)
-        if (state.triggerSettingsSave) {
-            SavedSettings.Save();  // Write locally stored settings to the external flash
-            state.triggerSettingsSave = false;
-        }
+        serviceSettingsSave();
 
         // Update LED blink state machine
         updateBlinkState();
 
-        // This keeps power-hungry transistors active in the STM32, preventing it from entering
-        // a low power state every time we exit the audio callback. This "work" greatly reduces an
-        // audible 1khz whine.
-        dummy_trig_value = sinf(0.12345f);
+        keepCoreBusy();
     }
 }

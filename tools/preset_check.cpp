@@ -1,10 +1,8 @@
-// Host-side proof that presets.toml parses and yields the expected values.
-// Usage: preset_check [--validate] [--print-knob-map] <presets.toml>
-// Without a flag, prints the same dump tools/gen_presets_toml.py writes to
-// build/presets_expected.txt, so the two can be diffed.
-// With --validate, prints nothing but a one-line summary and exits non-zero if
-// the firmware's own parser would reject the file.
-// With --print-knob-map, prints the resolved knob assignments instead.
+// Host-side check that presets.toml is accepted by the firmware's own parser.
+// Usage: preset_check --validate|--print-knob-map <presets.toml>
+// --validate        prints a one-line summary; exits 1 (with the parser's error
+//                   message on stderr) if the pedal would reject the file.
+// --print-knob-map  prints the resolved knob assignments of every preset.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,7 +45,7 @@ static char* readFile(const char* path)
 }
 
 // Mirror of the firmware's boot-time parse arena (TOML_ARENA_SIZE and
-// toml_arena_alloc, cloudseed.cpp:193-204): same size, same 8-byte alignment,
+// toml_arena_alloc, cloudseed.cpp:216-225): same size, same 8-byte alignment,
 // no reuse on free. Host pointers are 64-bit, so tomlc99's node allocations are
 // at least as large here as on the 32-bit target: fitting here implies fitting
 // on the pedal.
@@ -79,25 +77,38 @@ static void arenaFree(void*) {}
 
 int main(int argc, char** argv)
 {
-    bool        validateOnly = false;
-    bool        printKnobMap = false;
-    const char* path         = NULL;
+    enum Mode
+    {
+        Mode_None,
+        Mode_Validate,
+        Mode_PrintKnobMap
+    } mode           = Mode_None;
+    const char* path = NULL;
+    bool        bad  = false;
 
     for (int i = 1; i < argc; i++)
     {
+        Mode flag = Mode_None;
         if (strcmp(argv[i], "--validate") == 0)
-            validateOnly = true;
+            flag = Mode_Validate;
         else if (strcmp(argv[i], "--print-knob-map") == 0)
-            printKnobMap = true;
+            flag = Mode_PrintKnobMap;
+
+        if (flag != Mode_None)
+        {
+            if (mode != Mode_None)
+                bad = true;
+            mode = flag;
+        }
         else if (!path)
             path = argv[i];
         else
-            path = NULL;
+            bad = true;
     }
 
-    if (!path)
+    if (bad || mode == Mode_None || !path)
     {
-        fprintf(stderr, "usage: %s [--validate] [--print-knob-map] <presets.toml>\n",
+        fprintf(stderr, "usage: %s --validate|--print-knob-map <presets.toml>\n",
                 argv[0]);
         return 2;
     }
@@ -121,7 +132,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (printKnobMap)
+    if (mode == Mode_PrintKnobMap)
     {
         static const char* const kBankSuffix[2] = {"a", "b"};
         for (int p = 0; p < bank.count; p++)
@@ -141,29 +152,7 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    if (validateOnly)
-    {
-        printf("%s: %d presets valid, boot arena peak %zu of %zu bytes\n", path,
-               bank.count, gArenaPeak, kArenaSize);
-        return 0;
-    }
-
-    for (int p = 0; p < bank.count; p++)
-    {
-        const PresetData& preset = bank.presets[p];
-        printf("preset %d name=\"%s\" blinks=%d on=%u off=%u pause=%u "
-               "max_delay_lines=%.6g\n",
-               p, preset.name, preset.blinks, (unsigned)preset.onDurationMs,
-               (unsigned)preset.offDurationMs, (unsigned)preset.pauseAfterMs,
-               (double)preset.maxDelayLines);
-
-        for (int i = 0; i < (int)Parameter::Count; i++)
-        {
-            if (i == (int)Parameter::LineCount || i == (int)Parameter::isReverse)
-                continue;
-            printf("  %s = %.9g\n", kParameterNames[i], (double)preset.params[i]);
-        }
-    }
-
+    printf("%s: %d presets valid, boot arena peak %zu of %zu bytes\n", path,
+           bank.count, gArenaPeak, kArenaSize);
     return 0;
 }

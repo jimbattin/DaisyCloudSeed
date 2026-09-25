@@ -72,7 +72,7 @@ namespace CloudSeed
 	public:
 		
 		ReverbChannel(int bufferSize, int samplerate, ChannelLR leftOrRight)
-			: preDelay(bufferSize, (int)(samplerate * 1.0), 100) // 1 second delay buffer
+			: preDelay(bufferSize, samplerate + 2, 100) // 1000 ms max PreDelay + 2: ModulatedDelay reads SampleDelay and SampleDelay + 1 behind the write index
 			, multitap(samplerate) // use samplerate = 1 second delay buffer
 			, diffuser(samplerate, 150) // 150ms buffer, to allow for 100ms + modulation time
 			, highPass(samplerate)

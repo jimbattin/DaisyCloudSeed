@@ -15,8 +15,14 @@ namespace {
 
 #define PARAM(x) (int) Parameter::x
 
+template <typename T, size_t N>
+constexpr int countOf(const T (&)[N])
+{
+    return (int)N;
+}
+
 // Signal-flow grouping of the 45 preset-controlled parameters. Must stay in sync
-// with GROUPS in tools/gen_presets_toml.py and with the layout of presets.toml.
+// with the layout of presets.toml.
 const int kInputParams[] = {
     PARAM(InputMix), PARAM(PreDelay), PARAM(HiPassEnabled),
     PARAM(HighPass), PARAM(LowPassEnabled), PARAM(LowPass)};
@@ -57,7 +63,7 @@ struct ParamGroup {
     int         count;
 };
 
-#define GROUP(name, arr) {name, arr, (int)(sizeof(arr) / sizeof(arr[0]))}
+#define GROUP(name, arr) {name, arr, countOf(arr)}
 
 const ParamGroup kGroups[] = {
     GROUP("input", kInputParams),
@@ -70,7 +76,7 @@ const ParamGroup kGroups[] = {
     GROUP("output", kOutputParams),
 };
 
-const int kGroupCount = (int)(sizeof(kGroups) / sizeof(kGroups[0]));
+constexpr int kGroupCount = countOf(kGroups);
 
 // Driven live by SWITCH_1 (line count) and SWITCH_2 (bloom); never from a file.
 bool isRuntimeParameter(int index)
@@ -246,6 +252,12 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
             }
 
             const int owner = groupOfParameter(paramIndex);
+            if (owner < 0)
+            {
+                snprintf(err, errLen, "preset %d: parameter '%s' has no group",
+                         index, key);
+                return false;
+            }
             if (owner != g)
             {
                 snprintf(err, errLen,
@@ -260,6 +272,16 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
             {
                 snprintf(err, errLen, "preset %d: '%s' is not a number", index,
                          key);
+                return false;
+            }
+
+            // Rejects NaN too. ValueTables::Get indexes a table with the raw
+            // value (CloudSeed/AudioLib/ValueTables.cpp), so anything outside
+            // 0..1 reads out of bounds on the pedal.
+            if (!(value >= 0.0 && value <= 1.0))
+            {
+                snprintf(err, errLen, "preset %d: '%s' = %g out of range 0..1",
+                         index, key, value);
                 return false;
             }
 
@@ -415,7 +437,8 @@ bool parsePreset(const toml_table_t* preset, int index, PresetData& out,
 
     char context[32];
     snprintf(context, sizeof context, "preset %d: ", index);
-    if (!rejectUnknownKeys(preset, kPresetKeys, 8, context, err, errLen))
+    if (!rejectUnknownKeys(preset, kPresetKeys, countOf(kPresetKeys), context,
+                           err, errLen))
         return false;
 
     toml_datum_t name = toml_string_in(preset, "name");
@@ -458,11 +481,14 @@ bool parsePreset(const toml_table_t* preset, int index, PresetData& out,
         return false;
 
     double maxDelayLines = 0.0;
+    // The engine truncates LineCount to an int, so a fraction is a typo. The
+    // negated range test also rejects NaN.
     if (!readNumber(preset, "max_delay_lines", maxDelayLines)
-        || (float)maxDelayLines < 1.0f || (float)maxDelayLines > 5.0f)
+        || !(maxDelayLines >= 1.0 && maxDelayLines <= 5.0)
+        || maxDelayLines != (double)(int)maxDelayLines)
     {
-        snprintf(err, errLen, "preset %d: max_delay_lines out of range 1..5",
-                 index);
+        snprintf(err, errLen,
+                 "preset %d: max_delay_lines must be a whole number 1..5", index);
         return false;
     }
     out.maxDelayLines = (float)maxDelayLines;
@@ -492,7 +518,7 @@ bool parseRoot(const toml_table_t* root, PresetBank& bank, char* err, int errLen
     }
 
     static const char* const kRootKeys[] = {"preset"};
-    if (!rejectUnknownKeys(root, kRootKeys, 1, "", err, errLen))
+    if (!rejectUnknownKeys(root, kRootKeys, countOf(kRootKeys), "", err, errLen))
         return false;
 
     for (int i = 0; i < count; i++)

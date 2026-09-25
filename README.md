@@ -65,9 +65,8 @@ bad range, TOML syntax errors, or a document too large for the boot-time parse a
 broken preset file can no longer reach the pedal - where the only symptom would be **both**
 LEDs blinking together at 5 Hz with no audio.
 
-`make presets-check` additionally diffs the parsed values against the original factory dump in
-`tools/presets_expected.txt`. It is not part of `make`, because deliberately changing a preset
-value must not break the build.
+`make presets-check` runs the same check without building firmware. It fails only on a file the
+parser rejects; preset values themselves are free to change.
 
 Preset order is stored in flash: append new `[[preset]]` entries at the end, and bump
 `SETTINGS_VERSION` in `cloudseed.cpp` if you reorder or delete any.

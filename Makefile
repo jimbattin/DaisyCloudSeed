@@ -50,27 +50,22 @@ $(BUILD_DIR)/preset_check: tools/preset_check.cpp preset_bank.cpp preset_bank.h 
 
 # Schema gate: presets.toml is validated with the firmware's own parser before
 # it can be embedded. A file that fails here never reaches the pedal, where the
-# only symptom would be presetErrorLoop().
+# only symptom would be fatalErrorLoop().
 $(BUILD_DIR)/presets.valid: presets.toml $(BUILD_DIR)/preset_check
 	./$(BUILD_DIR)/preset_check --validate presets.toml
 	@touch $@
-
-presets-validate: $(BUILD_DIR)/presets.valid
 
 # Re-assemble the embedded blob whenever the preset data changes, and only after
 # it has passed validation.
 $(BUILD_DIR)/presets_toml.o: presets.toml $(BUILD_DIR)/presets.valid
 
-# Value-drift regression against the golden dump of the original hard-coded
-# presets. Deliberately NOT part of `make`: editing preset values is expected
-# and must not break the firmware build. tools/presets_expected.txt is
-# version-controlled because `make clean` wipes build/.
-presets-check: $(BUILD_DIR)/presets.valid
-	./$(BUILD_DIR)/preset_check presets.toml > $(BUILD_DIR)/presets_actual.txt
-	diff -u tools/presets_expected.txt $(BUILD_DIR)/presets_actual.txt
-	@echo "presets.toml matches tools/presets_expected.txt"
+# Manual check of presets.toml without building firmware. Fails only if the
+# firmware's own parser would reject the file (see preset_bank.cpp); preset
+# values themselves are free to change. Always re-runs, unlike the stamp above.
+presets-check: $(BUILD_DIR)/preset_check
+	./$(BUILD_DIR)/preset_check --validate presets.toml
 
-.PHONY: presets-check presets-validate
+.PHONY: presets-check
 
 libs:
 	$(MAKE) -C CloudSeed clean all
