@@ -9,10 +9,6 @@ AudioLib/ValueTables \
 Utils/Sha256 \
 
 
-# TODO: Consider making this work for PCs as well?
-
-CHIPSET = stm32f7x
-
 ######################################
 # building variables
 ######################################
@@ -25,9 +21,6 @@ OPT = -O3
 #######################################
 # paths
 #######################################
-# source path
-SOURCES_DIR =  \
-
 # Build path
 BUILD_DIR = build
 
@@ -35,8 +28,6 @@ BUILD_DIR = build
 # source
 ######################################
 
-# C sources
-C_SOURCES += $(addsuffix .c, $(MODULE_DIR)/$(MODULES))
 # CPP sources
 CPP_SOURCES += $(addsuffix .cpp, $(MODULE_DIR)/$(MODULES))
 
@@ -91,11 +82,7 @@ MCU = $(CPU) -mthumb $(FPU) $(FLOAT-ABI)
 AS_DEFS = 
 
 # C defines
-C_DEFS =  \
--DUSE_HAL_DRIVER \
--DSTM32H750xx \
--DUSE_HAL_DRIVER \
--DSTM32H750xx
+C_DEFS = -DUSE_HAL_DRIVER -DSTM32H750xx
 
 C_INCLUDES = \
 -I. \
@@ -118,18 +105,6 @@ CPPFLAGS += \
 -ffast-math \
 -finline-functions \
 -fno-aggressive-loop-optimizations
-
-#######################################
-# LDFLAGS # Not Used 
-# TODO: Clean this up.
-#######################################
-# link script
-#LDSCRIPT = STM32H750IB_FLASH.lds
-
-# libraries
-#LIBS = lc -lm -lnosys 
-#LIBDIR = 
-#LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections
 
 # default action: build all
 all: $(BUILD_DIR)/$(TARGET).a 

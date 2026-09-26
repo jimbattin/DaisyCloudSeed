@@ -8,7 +8,6 @@
 #include "cmsis_gcc.h"
 #include <atomic>
 #include <cmath>
-#include <stdio.h>
 #include <string.h>
 
 #include "CloudSeed/ReverbController.h"
@@ -19,6 +18,9 @@
 #include "knob_bank.h"
 #include "toggle_bank.h"
 #include "footswitch_gestures.h"
+#include "pedal_leds.h"
+#include "sdram_pool.h"
+#include "pedal_storage.h"
 
 using namespace daisy;
 using namespace terrarium;  // This is important for mapping the correct controls to the Daisy Seed on Terrarium PCB
@@ -45,105 +47,17 @@ constexpr float REVERSE_MIX_SMOOTHING = 0.002f;// per-sample one-pole toward tar
 // the 0.002 s default), i.e. no filtering at all; 0.05 is ~20 ms.
 constexpr float KNOB_SMOOTHING_COEFF = 0.05f;
 
-// Increment this when changing the settings struct so the software will know
-// to reset to defaults if this ever changes.
-constexpr int SETTINGS_VERSION = 2;
-
-// Settings are written to flash this long after the last preset/bypass change, so a
-// burst of footswitch presses costs one QSPI sector erase instead of one per press.
-constexpr uint32_t SETTINGS_SAVE_DELAY_MS = 3000;
-
-// User preset edits live in the 4 KB QSPI sector after Settings (offset 0, sector 0).
-// Both sit in the first 256 KB the Daisy bootloader never touches.
-constexpr uint32_t USER_PRESETS_QSPI_OFFSET = 0x1000;
-constexpr uint32_t QSPI_SECTOR_BYTES        = 4096;
-constexpr uint32_t USER_PRESET_VALID        = 1u;  // erased flash reads 0xFFFFFFFF
-
-// Save / restore confirmation: both LEDs blink together this many times.
-constexpr int      CONFIRM_BLINKS   = 3;
-constexpr uint32_t CONFIRM_BLINK_MS = 80;  // on and off time
-
 // Terrarium footswitches. The values are indices into hw.switches[] (terrarium.h).
 // The four toggles are mapped per preset through [preset.toggle_map] (kToggleIndex).
 constexpr int BYPASS_FOOTSWITCH    = Terrarium::FOOTSWITCH_1;
 constexpr int PRESET_FOOTSWITCH    = Terrarium::FOOTSWITCH_2;
 
-// LED blink pattern configuration (defined early for use in preset config)
-struct BlinkPattern {
-    int numBlinks;           // Number of times to blink
-    uint32_t onDurationMs;   // How long LED stays on per blink
-    uint32_t offDurationMs;  // How long LED stays off between blinks
-    uint32_t pauseAfterMs;   // Pause after all blinks complete
-};
-
-// Blink state machine
-struct BlinkState {
-    bool         active             = false;
-    int          currentBlink       = 0;
-    bool         ledOn              = false;
-    uint32_t     lastTransitionTime = 0;
-    BlinkPattern pattern            = {};
-};
-
-// Presets are defined in presets.toml, embedded into the firmware image by
-// presets_toml.s and parsed once at boot into gPresets.
-extern "C" {
-    extern const char     presets_toml[];
-    extern const uint32_t presets_toml_len;  // includes the terminating NUL
-    // Linker symbols bounding .text + .rodata (libdaisy/core/STM32H750IB_sram.lds:36,47),
-    // which include the embedded presets.toml. Used as the firmware identity.
-    extern const uint32_t _stext[];
-    extern const uint32_t _etext[];
-}
-
+// presets.toml, embedded by presets_toml.s and parsed once at boot
+// (LoadEmbeddedPresetBank()).
 static PresetBank gPresets;
 static KnobBank gKnobs;
 static ToggleBank gToggles;
 static FootswitchGestures gFootswitches;
-
-// Persistent Settings
-struct Settings {
-    int version;        // Version of the settings struct
-    int currentPreset;  // 0 .. gPresets.count-1
-    bool bypass;         // Persisted bypass state (true = pedal was bypassed at last save)
-
-    // Overloading the != operator
-    // This is necessary as this operator is used in the PersistentStorage source code
-    bool operator!=(const Settings& a) const {
-        return !(
-            a.version == version &&
-            a.currentPreset == currentPreset &&
-            a.bypass == bypass
-        );
-    }
-};
-
-// One preset's saved edit. Every field is 4 bytes, so there is no padding and the
-// memcmp below is exact. `valid` is last: QSPI pages are programmed in ascending
-// order, so a slot whose `valid` reads USER_PRESET_VALID was written completely.
-struct UserPreset {
-    float    params[(int)::Parameter::Count];  // reverb->GetAllParameters() at save time
-    float    reverseDelay;                     // state.reverseDelayNorm at save time
-    float    delayLinesMax;                    // state.delayLinesMax at save time, 0.0 or 1.0
-    float    reverseEnabled;                   // state.reverseEnabled at save time, 0.0 or 1.0
-    float    reverseDirectMix;                 // state.reverseDirectMix at save time, 0.0 or 1.0
-    uint32_t valid;                            // USER_PRESET_VALID, else load from presets.toml
-};
-
-struct UserPresets {
-    uint32_t   firmwareHash;                   // firmwareImageHash() of the image that saved these
-    UserPreset presets[kMaxPresets];
-
-    // Required by PersistentStorage: decides whether Save() erases and writes.
-    bool operator!=(const UserPresets& a) const { return memcmp(this, &a, sizeof *this) != 0; }
-};
-
-// +4: PersistentStorage prefixes its State word.
-static_assert(sizeof(UserPresets) + 4 <= QSPI_SECTOR_BYTES,
-              "user presets must fit one QSPI sector");
-
-static bool     gSettingsSavePending = false;  // RAM copy differs from what was last saved
-static uint32_t gSettingsChangedAtMs = 0;      // System::GetNow() of the last change
 
 // Global state structure
 struct PedalState {
@@ -187,11 +101,6 @@ struct PedalState {
     // Derived from DryOut/EarlyOut/MainOut; recomputed only when those change.
     float makeupGain   = OUTPUT_VOLUME_BOOST;
     float scaledDryOut = 0.0f;
-
-    // Once audio runs, only the callback calls Update(): Led::Update() is a
-    // read-modify-write and would race with the main loop.
-    Led led1;
-    Led led2;
 };
 
 // knob1..knob6 in presets.toml order -> hw.knob[] indices (Terrarium ADC order)
@@ -206,14 +115,9 @@ static const int kToggleIndex[kToggleCount] = {
 // Declare a local daisy_petal for hardware access
 static DaisyPetal hw;
 static PedalState state;
+static PedalStorage gStorage(hw.seed.qspi);
 static CloudSeed::ReverbController* reverb = nullptr;
 static CloudSeed::ReverseDelay reverseDelay;
-
-// Persistent Storage Declaration. Using type Settings and passed the device's qspi handle
-static PersistentStorage<Settings> SavedSettings(hw.seed.qspi);
-
-// User preset edits, one slot per preset (see UserPresets).
-static PersistentStorage<UserPresets> SavedUserPresets(hw.seed.qspi);
 
 // FS1 5 s hold: the callback snapshots the engine into gSaveSnapshot on the next
 // block the preset-change gate is open, then publishes it with saveSnapshotReady.
@@ -221,81 +125,8 @@ static bool       gSaveRequested = false;  // audio callback only
 static UserPreset gSaveSnapshot;           // callback writes while !saveSnapshotReady;
                                            // main loop reads while it is set
 
-static BlinkState led2BlinkState;
-
-// Unrecoverable boot failure (preset parse, SDRAM pool exhausted, unexpected audio
-// block size). Blink both LEDs at 5 Hz forever and never start audio, so the failure
-// is unmistakable on the pedal. Runs before any audio callback, so it drives the LEDs
-// itself.
-[[noreturn]] static void fatalErrorLoop() {
-    while (true) {
-        state.led1.Set(1.0f); state.led2.Set(1.0f);
-        state.led1.Update(); state.led2.Update();
-        System::Delay(100);
-        state.led1.Set(0.0f); state.led2.Set(0.0f);
-        state.led1.Update(); state.led2.Update();
-        System::Delay(100);
-    }
-}
-
-/*
- * Memory pool for delay lines
- */
-
-static constexpr size_t alignUp8(size_t n) {
-    return (n + 7u) & ~static_cast<size_t>(7u);
-}
-
-// This is used in the modified CloudSeed code for allocating
-// delay line memory to SDRAM (64MB available on Daisy)
-constexpr size_t CUSTOM_POOL_SIZE = 48u * 1024u * 1024u;
-DSY_SDRAM_BSS __attribute__((aligned(32))) static char custom_pool[CUSTOM_POOL_SIZE];
+// Reverse voice record buffer (ReverseDelay); lives in SDRAM next to custom_pool.
 DSY_SDRAM_BSS static float reverseDelayBuffer[REVERSE_BUFFER_SIZE];
-static size_t pool_index = 0;
-
-// Bump allocator, no free. Returns 8-byte aligned blocks. Declared extern by the
-// CloudSeed headers, so the signature and external linkage must stay as they are.
-void* custom_pool_allocate(size_t size) {
-    const size_t aligned = alignUp8(size);
-    if (aligned > CUSTOM_POOL_SIZE - pool_index)
-        fatalErrorLoop();  // callers placement-new into the result; 0x0 is ITCMRAM on the H750
-    void* ptr = &custom_pool[pool_index];
-    pool_index += aligned;
-    return ptr;
-}
-
-/*
- * Boot-only TOML parse arena
- */
-
-// Carved from the head of custom_pool. Nothing else has allocated from the pool
-// yet (the reverb is constructed afterwards), so the whole region is handed back
-// simply by abandoning it. The heap is deliberately avoided: libnosys' _sbrk
-// grows unchecked from end = 0x30008000 into the 256 KB RAM_D2 region.
-constexpr size_t TOML_ARENA_SIZE = 512 * 1024;
-static size_t toml_arena_index = 0;
-
-static void* toml_arena_alloc(size_t size) {
-    const size_t aligned = alignUp8(size);
-    if (toml_arena_index + aligned > TOML_ARENA_SIZE) return nullptr;
-    void* ptr = &custom_pool[toml_arena_index];
-    toml_arena_index += aligned;
-    return ptr;
-}
-
-static void toml_arena_free(void*) {}
-
-static bool loadPresetBank(char* err, int errLen) {
-    toml_arena_index = 0;
-    // toml_parse() mutates its input, so parse a scratch copy, never the .rodata blob.
-    char* scratch = static_cast<char*>(toml_arena_alloc(presets_toml_len));
-    if (!scratch) { snprintf(err, errLen, "arena too small"); return false; }
-    memcpy(scratch, presets_toml, presets_toml_len);
-    const bool ok = ParsePresetBank(scratch, gPresets, err, errLen,
-                                    toml_arena_alloc, toml_arena_free);
-    toml_arena_index = 0;  // release: custom_pool is untouched from here on
-    return ok;
-}
 
 /*
  * Presets
@@ -341,7 +172,7 @@ static void loadPreset(int presetIndex) {
     }
 
     const PresetData& p      = gPresets.presets[presetIndex];
-    const UserPreset& u      = SavedUserPresets.GetSettings().presets[presetIndex];
+    const UserPreset& u      = gStorage.UserSlot(presetIndex);
     const bool        edited = u.valid == USER_PRESET_VALID;
 
     reverb->ClearBuffers();
@@ -378,62 +209,6 @@ static void loadPresetGated(int index) {
     loadPreset(index);
     std::atomic_signal_fence(std::memory_order_seq_cst);  // preset fully written before reopening
     state.presetChangeInProgress = false;
-}
-
-/*
- * Persistent settings
- */
-
-static void loadSettings() {
-    // A layout change (SETTINGS_VERSION mismatch) discards the stored struct.
-    if (SavedSettings.GetSettings().version != SETTINGS_VERSION)
-        SavedSettings.RestoreDefaults();
-
-    const Settings& s = SavedSettings.GetSettings();
-    state.currentPreset =
-        (s.currentPreset >= 0 && s.currentPreset < gPresets.count) ? s.currentPreset : 0;
-    state.bypass = s.bypass;
-    loadPreset(state.currentPreset);
-}
-
-// FNV-1a over the loaded code + read-only data. Any change to code or presets.toml
-// changes it, so saved edits never outlive the firmware that wrote them.
-static uint32_t firmwareImageHash() {
-    uint32_t h = 2166136261u;
-    for (const uint32_t* p = _stext; p < _etext; ++p) {
-        h ^= *p;
-        h *= 16777619u;
-    }
-    return h;
-}
-
-static void initUserPresets() {
-    const uint32_t hash     = firmwareImageHash();
-    UserPresets    defaults = {};
-    defaults.firmwareHash   = hash;
-    SavedUserPresets.Init(defaults, USER_PRESETS_QSPI_OFFSET);
-    // Edits written by a different firmware image are discarded (one sector erase).
-    if (SavedUserPresets.GetSettings().firmwareHash != hash)
-        SavedUserPresets.RestoreDefaults();
-}
-
-// Main loop only. Mirrors pedal state into the RAM copy of the settings and writes
-// flash SETTINGS_SAVE_DELAY_MS after the last change, so a burst of preset/bypass
-// changes costs one QSPI sector erase. Save() skips the erase entirely when flash
-// already matches (PersistentStorage::StoreSettingsIfChanged).
-static void serviceSettingsSave() {
-    Settings&  s      = SavedSettings.GetSettings();
-    const bool bypass = state.bypass;
-    if (s.currentPreset != state.currentPreset || s.bypass != bypass) {
-        s.currentPreset      = state.currentPreset;
-        s.bypass             = bypass;
-        gSettingsSavePending = true;
-        gSettingsChangedAtMs = System::GetNow();
-    }
-    if (gSettingsSavePending && System::GetNow() - gSettingsChangedAtMs >= SETTINGS_SAVE_DELAY_MS) {
-        SavedSettings.Save();
-        gSettingsSavePending = false;
-    }
 }
 
 // Writes one knob value to its mapped destination.
@@ -518,98 +293,6 @@ static float knobTargetValue(const KnobTarget& target) {
 }
 
 /*
- * LED blink
- */
-
-// Start a blink sequence. LED2 itself is pushed to the pin by the audio callback.
-static void startBlinkSequence(const BlinkPattern& pattern) {
-    led2BlinkState.active = true;
-    led2BlinkState.currentBlink = 0;
-    led2BlinkState.ledOn = false;
-    led2BlinkState.lastTransitionTime = System::GetNow();
-    led2BlinkState.pattern = pattern;
-    state.led2.Set(0.0f);
-}
-
-// Update blink state machine (call this in main loop)
-static void updateBlinkState() {
-    // If bypassed, turn off LED2 and deactivate blinking
-    if (state.bypass) {
-        if (led2BlinkState.active) {
-            led2BlinkState.active = false;
-            state.led2.Set(0.0f);
-        }
-        return;
-    }
-
-    // If not active and not bypassed, restart the blink sequence
-    if (!led2BlinkState.active) {
-        startBlinkSequence(state.blinkPattern);
-        return;
-    }
-
-    uint32_t now = System::GetNow();
-    uint32_t elapsed = now - led2BlinkState.lastTransitionTime;
-
-    if (led2BlinkState.ledOn) {
-        // LED is currently on, check if it's time to turn it off
-        if (elapsed >= led2BlinkState.pattern.onDurationMs) {
-            state.led2.Set(0.0f);
-            led2BlinkState.ledOn = false;
-            led2BlinkState.lastTransitionTime = now;
-            led2BlinkState.currentBlink++;
-        }
-    } else {
-        // LED is currently off
-        if (led2BlinkState.currentBlink >= led2BlinkState.pattern.numBlinks) {
-            // All blinks complete, check if pause is done
-            if (elapsed >= led2BlinkState.pattern.pauseAfterMs) {
-                // Restart the sequence instead of stopping
-                led2BlinkState.currentBlink = 0;
-                led2BlinkState.ledOn = false;
-                led2BlinkState.lastTransitionTime = now;
-            }
-        } else {
-            // More blinks to go, check if it's time to turn LED on again
-            if (elapsed >= led2BlinkState.pattern.offDurationMs) {
-                state.led2.Set(1.0f);
-                led2BlinkState.ledOn = true;
-                led2BlinkState.lastTransitionTime = now;
-            }
-        }
-    }
-}
-
-static bool     gConfirmActive  = false;  // main loop only
-static uint32_t gConfirmStartMs = 0;
-
-// Main loop only: starts the save/restore confirmation blink.
-static void startConfirmBlink() {
-    gConfirmActive  = true;
-    gConfirmStartMs = System::GetNow();
-}
-
-// Drives LED1+LED2 together through CONFIRM_BLINKS on/off cycles, shown even when
-// bypassed. Returns false once idle; on completion restores LED1 to the bypass state
-// and hands LED2 back to updateBlinkState(), which restarts the preset pattern.
-static bool updateConfirmBlink() {
-    if (!gConfirmActive)
-        return false;
-    const uint32_t step = (System::GetNow() - gConfirmStartMs) / CONFIRM_BLINK_MS;
-    if (step >= 2u * CONFIRM_BLINKS) {
-        gConfirmActive = false;
-        state.led1.Set(state.bypass ? 0.0f : 1.0f);
-        state.led2.Set(0.0f);
-        led2BlinkState.active = false;
-        return false;
-    }
-    const float level = (step % 2u == 0u) ? 1.0f : 0.0f;
-    state.led1.Set(level);
-    state.led2.Set(level);
-    return true;
-}
-
-/*
  * Main audio callback
  */
 
@@ -630,7 +313,7 @@ static void processFootswitches() {
     // FS1 released (not after a save hold, not part of a chord): toggle bypass.
     if (ev.toggleBypass) {
         state.bypass = !state.bypass;
-        state.led1.Set(state.bypass ? 0.0f : 1.0f);
+        SetBypassLed(state.bypass);
     }
 
     // FS2 released with no secondary knob write during the hold: next preset (the
@@ -757,8 +440,7 @@ static void audioCallback(AudioHandle::InputBuffer  in,
                           size_t                    /*size*/) {
     hw.ProcessAnalogControls();
     hw.ProcessDigitalControls();
-    state.led1.Update();
-    state.led2.Update();
+    UpdateLeds();
     processFootswitches();
 
     // The main loop cannot run while this callback does, so read each shared flag once.
@@ -829,24 +511,20 @@ int main(void) {
     __set_FPSCR(__get_FPSCR() | (1u << 24)); // FZ: flush denormals to zero in hardware
     hw.Init();
 
-    // LEDs first: fatalErrorLoop() is the only way a boot failure can be reported
+    // LEDs first: FatalErrorLoop() is the only way a boot failure can be reported
     // on the pedal.
-    state.led1.Init(hw.seed.GetPin(Terrarium::LED_1), false);
-    state.led1.Update();
-
-    state.led2.Init(hw.seed.GetPin(Terrarium::LED_2), false);
-    state.led2.Update();
+    LedsInit(hw.seed.GetPin(Terrarium::LED_1), hw.seed.GetPin(Terrarium::LED_2));
 
     // Every callback loop and buffer is sized by AUDIO_BUFFER_SIZE.
     if (hw.AudioBlockSize() != AUDIO_BUFFER_SIZE)
-        fatalErrorLoop();
+        FatalErrorLoop();
 
     // Parse the embedded presets.toml. SDRAM is only usable after hw.Init(), and
     // the ReverbController below is the first consumer of custom_pool, so the
     // scratch arena window is exactly here.
     char presetErr[128];
-    if (!loadPresetBank(presetErr, sizeof presetErr))
-        fatalErrorLoop();
+    if (!LoadEmbeddedPresetBank(gPresets, presetErr, sizeof presetErr))
+        FatalErrorLoop();
 
     const float sampleRate = hw.AudioSampleRate();
 
@@ -854,11 +532,11 @@ int main(void) {
     AudioLib::ValueTables::Init();
     CloudSeed::FastSin::Init();
 
-    // Initialize reverb controller (loadSettings() below clears and loads a preset)
+    // Initialize reverb controller (loadPreset() below clears and loads a preset)
     reverb = new CloudSeed::ReverbController(sampleRate);
 
     // Initialize reverse delay stage (records dry input or reverb output for backward
-    // playback). Init() clears the buffer; loadSettings() applies the preset's
+    // playback). Init() clears the buffer; loadPreset() applies the preset's
     // reverse.delay window.
     reverseDelay.Init(reverseDelayBuffer, REVERSE_BUFFER_SIZE, 0);
     state.samplesPerMs = sampleRate / 1000.0f;
@@ -868,25 +546,17 @@ int main(void) {
     for (int i = 0; i < kKnobCount; i++)
         hw.knob[kKnobIndex[i]].SetCoeff(KNOB_SMOOTHING_COEFF);
 
-    // Initialize persistent storage with default settings
-    Settings defaultSettings = {
-        SETTINGS_VERSION,  // version
-        0,                 // currentPreset (default to Chorus preset)
-        true               // bypass (default to bypassed/silent on first boot)
-    };
-    SavedSettings.Init(defaultSettings);
-
-    // User preset edits (wiped if a different firmware image saved them). Must
-    // precede loadSettings(), whose loadPreset() reads them.
-    initUserPresets();
-
-    // Load settings from persistent storage (with resilience to failures)
-    loadSettings();
+    // Flash settings and user preset edits (wiped if a different firmware image saved
+    // them). Must precede loadPreset(), which reads the user slots.
+    gStorage.Init();
+    state.currentPreset = gStorage.RestoredPreset(gPresets.count);
+    state.bypass        = gStorage.RestoredBypass();
+    loadPreset(state.currentPreset);
 
     // Reflect the restored bypass state on LED1 (Init() above only configured GPIO
     // polarity; it did not light LED1 for a restored non-bypassed startup state)
-    state.led1.Set(state.bypass ? 0.0f : 1.0f);
-    state.led1.Update();
+    SetBypassLed(state.bypass);
+    UpdateLeds();
 
     // Start audio processing
     hw.StartAdc();
@@ -909,18 +579,18 @@ int main(void) {
         // the blocking flash write belongs to the preset loaded when it was taken.
         if (state.saveSnapshotReady) {
             std::atomic_signal_fence(std::memory_order_seq_cst);
-            SavedUserPresets.GetSettings().presets[state.currentPreset] = gSaveSnapshot;
+            gStorage.UserSlot(state.currentPreset) = gSaveSnapshot;
             std::atomic_signal_fence(std::memory_order_seq_cst);
             state.saveSnapshotReady = false;
-            SavedUserPresets.Save();  // blocking QSPI erase+write; audio keeps running
-            startConfirmBlink();
+            gStorage.SaveUserPresets();  // blocking QSPI erase+write; audio keeps running
+            StartConfirmBlink();
         }
         if (state.triggerPresetRestore) {
             state.triggerPresetRestore = false;
-            SavedUserPresets.GetSettings().presets[state.currentPreset] = UserPreset{};
+            gStorage.UserSlot(state.currentPreset) = UserPreset{};
             loadPresetGated(state.currentPreset);  // factory sound now; also drops unsaved knob tweaks
-            SavedUserPresets.Save();                // no erase if the slot was already empty
-            startConfirmBlink();
+            gStorage.SaveUserPresets();                // no erase if the slot was already empty
+            StartConfirmBlink();
         }
 
         // Preset changes run here, not in the audio callback. The callback passes
@@ -930,14 +600,14 @@ int main(void) {
         if (state.triggerPresetChange) {
             state.triggerPresetChange = false;
             loadPresetGated((state.currentPreset + 1) % gPresets.count);
-            startBlinkSequence(state.blinkPattern);
+            StartPresetBlink(state.blinkPattern);
         }
 
-        serviceSettingsSave();
+        gStorage.ServiceSettingsSave(state.currentPreset, state.bypass);
 
         // LED1+LED2 save/restore confirmation, else the LED2 preset pattern
-        if (!updateConfirmBlink())
-            updateBlinkState();
+        if (!ServiceConfirmBlink(state.bypass))
+            ServicePresetBlink(state.bypass, state.blinkPattern);
 
         keepCoreBusy();
     }

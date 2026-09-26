@@ -46,7 +46,7 @@ static char* readFile(const char* path)
 }
 
 // Mirror of the firmware's boot-time parse arena (TOML_ARENA_SIZE and
-// toml_arena_alloc, cloudseed.cpp:216-225): same size, same 8-byte alignment,
+// toml_arena_alloc in src/sdram_pool.cpp): same size, same 8-byte alignment,
 // no reuse on free. Host pointers are 64-bit, so tomlc99's node allocations are
 // at least as large here as on the 32-bit target: fitting here implies fitting
 // on the pedal.
@@ -62,7 +62,7 @@ static void* arenaAlloc(size_t size)
     {
         fprintf(stderr,
                 "boot parse arena exhausted: needs more than %zu bytes "
-                "(TOML_ARENA_SIZE, cloudseed.cpp)\n",
+                "(TOML_ARENA_SIZE, src/sdram_pool.cpp)\n",
                 kArenaSize);
         exit(1);
     }
@@ -135,7 +135,7 @@ int main(int argc, char** argv)
     if (!text)
         return 2;
 
-    // Same shape as loadPresetBank(): a scratch copy of the NUL-terminated blob
+    // Same shape as LoadEmbeddedPresetBank(): a scratch copy of the NUL-terminated blob
     // is the arena's first allocation, because toml_parse() mutates its input.
     const size_t blobLen = strlen(text) + 1;
     char*        scratch = (char*)arenaAlloc(blobLen);

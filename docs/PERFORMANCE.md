@@ -7,7 +7,7 @@ lived at, and the fix applied. No control mapping, preset, or audio topology cha
 
 ## 1. FPU flush-to-zero (denormal stall elimination)
 
-**Files**: `cloudseed.cpp`
+**Files**: `src/cloudseed.cpp`
 
 Reverb feedback paths decay exponentially toward zero every tail: `DelayLine::Process`'s
 feedback multiply (`CloudSeed/DelayLine.h:191`), `ModulatedAllpass::Process*`'s feedback
@@ -92,7 +92,7 @@ overload with no promotion/narrowing.
 **Files**: `CloudSeed/ModulatedDelay.h`, `CloudSeed/ModulatedAllpass.h`,
 `CloudSeed/MultitapDiffuser.h`, `CloudSeed/ReverbChannel.h`, `CloudSeed/DelayLine.h`
 
-The custom SDRAM allocator (`./cloudseed.cpp`'s `custom_pool_allocate`) is a
+The custom SDRAM allocator (`src/sdram_pool.cpp`'s `custom_pool_allocate`) is a
 bump allocator with no free function — by design, since the `ReverbController` is
 constructed once and lives for the process lifetime. Most buffers are correctly
 constructed with placement `new (custom_pool_allocate(...)) T[...]` into this pool, but
@@ -118,7 +118,7 @@ pointers) was already correctly paired and left untouched.
 
 **Files**: `./Makefile`, `CloudSeed/Makefile`
 
-`./cloudseed.cpp` built through `libdaisy/core/Makefile`'s default
+`src/cloudseed.cpp` built through `libdaisy/core/Makefile`'s default
 `OPT ?= -O2`, one level below the `-O3` the `CloudSeed/` library itself already used.
 
 **Fix**: `./Makefile` now sets `OPT = -O3` before including
@@ -135,7 +135,7 @@ and drops `errno`-setting overhead from `pow`/`sqrt`/`log10` calls.
 
 ## 8. Remove redundant bypass-buffer copy in the audio callback
 
-**File**: `./cloudseed.cpp`
+**File**: `src/cloudseed.cpp`
 
 `audioBypassBuffer[AUDIO_BUFFER_SIZE]` existed purely to echo the input back out when
 bypassed, filled by a full per-sample copy loop every block regardless of bypass state.

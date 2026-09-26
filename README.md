@@ -34,7 +34,7 @@ DaisyCloudSeed is a port to the Daisy environment for running on a Daisy Patch u
 for use on the Terrarium guitar pedal. The processing has been changed to mono (from stereo), which allows up to 5 delay lines,
 and fills out all of the Terrarium's controls. 
 
-![Pedal Picture](pedal.png)
+![Pedal Picture](docs/pedal.png)
 
 Download the cloudseed.bin for Daisy Seed from the [Releases](https://github.com/GuitarML/DaisyCloudSeed/releases) page.
 
@@ -78,7 +78,7 @@ LEDs blinking together at 5 Hz with no audio.
 parser rejects; preset values themselves are free to change.
 
 Preset order is stored in flash: append new `[[preset]]` entries at the end, and bump
-`SETTINGS_VERSION` in `cloudseed.cpp` if you reorder or delete any.
+`SETTINGS_VERSION` in `src/pedal_storage.cpp` if you reorder or delete any.
 
 ## Saving and restoring presets on the pedal
 

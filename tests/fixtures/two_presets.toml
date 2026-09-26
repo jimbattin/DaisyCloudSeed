@@ -1,0 +1,241 @@
+# Test fixture for tests/preset_bank_test.cpp; not firmware data.
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Chorus"
+blinks = 1
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+default_delay_lines = 2.0
+max_delay_lines = 5.0
+
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while the preset footswitch (FS2) is held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
+
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.0
+PreDelay       = 0.070000000298023224
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 0.0
+LowPass        = 0.29000008106231689
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 0.36499997973442078
+TapLength = 1.0
+TapGain   = 1.0
+TapDecay  = 0.86500012874603271
+isReverse = 0.0
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1.0
+DiffusionStages         = 0.4285714328289032
+DiffusionDelay          = 0.43500006198883057
+DiffusionFeedback       = 0.725000262260437
+EarlyDiffusionModAmount = 0.50000005960464478
+EarlyDiffusionModRate   = 0.42500010132789612
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.68499988317489624
+LineDecay     = 0.68000012636184692
+LineModAmount = 0.59000003337860107
+LineModRate   = 0.46999993920326233
+LateStageTap  = 1.0
+Interpolation = 0.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 1.0
+LateDiffusionStages    = 0.28571429848670959
+LateDiffusionDelay     = 0.54499995708465576
+LateDiffusionFeedback  = 0.65999996662139893
+LateDiffusionModAmount = 0.619999885559082
+LateDiffusionModRate   = 0.42500019073486328
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 0.0
+PostLowShelfGain       = 0.5199999213218689
+PostLowShelfFrequency  = 0.31499990820884705
+HighShelfEnabled       = 0.0
+PostHighShelfGain      = 0.83500003814697266
+PostHighShelfFrequency = 0.73000013828277588
+CutoffEnabled          = 1.0
+PostCutoffFrequency    = 0.73499983549118042
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.0011500000255182385
+DiffusionSeed     = 0.00018899999849963933
+DelaySeed         = 0.00033700000494718552
+PostDiffusionSeed = 0.00050099997315555811
+CrossSeed         = 0.0
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 0.94499987363815308
+PredelayOut = 0.0
+EarlyOut    = 0.77999997138977051
+MainOut     = 0.74500006437301636
+
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
+[preset.params.reverse]
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
+
+# --------------------------------------------------------------------------
+[[preset]]
+name = "Through the Looking Glass"
+blinks = 9
+led_on_ms = 150
+led_off_ms = 150
+led_pause_ms = 5000
+default_delay_lines = 2.0
+max_delay_lines = 4.0
+
+# Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
+# is active only while the preset footswitch (FS2) is held down.
+[preset.knob_map]
+knob1_a = "output.DryOut"
+knob2_a = "output.EarlyOut"
+knob3_a = "output.MainOut"
+knob4_a = "late_diffusion.LateDiffusionFeedback"
+knob5_a = "early.TapDecay"
+knob6_a = "late.LineDecay"
+knob1_b = "input.PreDelay"
+knob2_b = "input.HighPass"
+knob3_b = "input.LowPass"
+knob4_b = "late.LineModAmount"
+knob5_b = "late.LineModRate"
+knob6_b = "reverse.delay"
+
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
+# Input stage: pre-delay and the input filters feeding the whole reverb.
+[preset.params.input]
+InputMix       = 0.0
+PreDelay       = 0.0
+HiPassEnabled  = 0.0
+HighPass       = 0.0
+LowPassEnabled = 1.0
+LowPass        = 0.74000012874603271
+
+# Early reflections: the multi-tap delay that follows the input stage.
+[preset.params.early]
+TapCount  = 1.0
+TapLength = 1.0
+TapGain   = 1.0
+TapDecay  = 0.71000003814697266
+isReverse = 0.0
+
+# Early diffusion: allpass chain that smears the early reflections.
+[preset.params.early_diffusion]
+DiffusionEnabled        = 1.0
+DiffusionStages         = 1.0
+DiffusionDelay          = 0.65999996662139893
+DiffusionFeedback       = 0.76000010967254639
+EarlyDiffusionModAmount = 0.41999998688697815
+EarlyDiffusionModRate   = 0.30500012636184692
+
+# Late reverb lines: the feedback delay network that generates the tail.
+[preset.params.late]
+LineDelay     = 0.9100002646446228
+LineDecay     = 0.80999958515167236
+LineModAmount = 0.4649999737739563
+LineModRate   = 0.3199998140335083
+LateStageTap  = 1.0
+Interpolation = 1.0
+
+# Late diffusion: allpass chain inside each delay line.
+[preset.params.late_diffusion]
+LateDiffusionEnabled   = 1.0
+LateDiffusionStages    = 1.0
+LateDiffusionDelay     = 0.71499955654144287
+LateDiffusionFeedback  = 0.71999979019165039
+LateDiffusionModAmount = 0.40999993681907654
+LateDiffusionModRate   = 0.31500011682510376
+
+# Late EQ: shelves and low-pass applied inside each line's feedback path.
+[preset.params.late_eq]
+LowShelfEnabled        = 0.0
+PostLowShelfGain       = 0.87999987602233887
+PostLowShelfFrequency  = 0.19499993324279785
+HighShelfEnabled       = 0.0
+PostHighShelfGain      = 0.72000008821487427
+PostHighShelfFrequency = 0.520000159740448
+CutoffEnabled          = 1.0
+PostCutoffFrequency    = 0.7150002121925354
+
+# Random seeds: fix the tap/delay/diffusion patterns so a preset is reproducible.
+[preset.params.seeds]
+TapSeed           = 0.0003009999927598983
+DiffusionSeed     = 0.00018899999849963933
+DelaySeed         = 0.0001610000035725534
+PostDiffusionSeed = 0.00050099997315555811
+CrossSeed         = 1.0
+
+# Output mix: level of each stage in the final signal.
+[preset.params.output]
+DryOut      = 0.0
+PredelayOut = 0.0
+EarlyOut    = 0.0
+MainOut     = 0.95499974489212036
+
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
+[preset.params.reverse]
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
+
