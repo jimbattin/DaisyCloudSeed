@@ -36,21 +36,23 @@ and fills out all of the Terrarium's controls.
 
 ![Pedal Picture](docs/pedal.png)
 
-Download the cloudseed.bin for Daisy Seed from the [Releases](https://github.com/GuitarML/DaisyCloudSeed/releases) page.
+GuitarML's [Releases](https://github.com/GuitarML/DaisyCloudSeed/releases) page has the upstream
+firmware, which has none of this fork's features; build this fork from source as below.
 
 ## Getting started
-The new code for Terrarium has been added to ```DaisyCloudSeed/petal```.
-Build the daisy libraries and CloudSeed with (after installing the Daisy Toolchain):
+Build the daisy libraries and CloudSeed from the repo root (after installing the Daisy Toolchain
+and running `git submodule update --init --recursive`):
 ```
 make libs
 make
 ```
 
 Then flash your terrarium with the following commands (or use the [Electrosmith Web Programmer](https://electro-smith.github.io/Programmer/))
-**NOTE** This fork (of a fork) uses BOOT_SRAM, so you'll need to program the bootloader accordingly. A hardware bug in either the bootloader or your Daisy itself may also require you to follow a goofy little procedure to actually get program-dfu to work
+**NOTE** This fork (of a fork) uses BOOT_SRAM, so the Daisy bootloader must be flashed once
+(`make program-boot`) before the app. `program-dfu` only finds the Seed while the bootloader is
+waiting: press RESET, then hold BOOT until the LED blinks rapidly.
 ```
-# from the petal/CloudSeed directory...
-# using USB (after entering bootloader mode)
+# from the repo root, using USB
 make program-boot
 # Hit restart and then hold Boot on your DaisySeed until you see a rapid blink
 make program-dfu
@@ -99,6 +101,10 @@ cycles. Flashing any different firmware (including a presets.toml edit) discards
 preset, so the pedal boots with the factory versions. Re-flashing a byte-identical `.bin` keeps
 them. The knob and toggle maps, the delay-line counts, and blink timing always come from
 presets.toml.
+
+The current preset and the bypass state are saved automatically 3 s after the last change;
+switching the pedal off sooner than that loses the change. A new pedal (or one whose saved
+settings layout changed) starts on preset 1, bypassed.
 
 ## Knob mapping
 
@@ -168,10 +174,10 @@ All eight keys are required. Accepted targets (lever up = on):
 | `early_diffusion.DiffusionStages`, `late_diffusion.LateDiffusionStages` | Off = 1 allpass stage, on = 2; a flip overwrites the stored stage value with 0.0/1.0 |
 | `late_eq.LowShelfEnabled`, `late_eq.HighShelfEnabled`, `late_eq.CutoffEnabled` | Low shelf / high shelf / low-pass on the tail on/off (inside each line's feedback path) |
 | `late.LateStageTap` | On = each line outputs from before its delay (after the late diffuser, which then runs first), so the tail starts one `LineDelay` sooner; off = output after the delay |
-| `late.Interpolation` | More CPU; may crackle at 5 lines |
+| `late.Interpolation` | Fractional-delay interpolation in the late-diffuser allpasses (more CPU); no effect while `late_diffusion.LateDiffusionEnabled` is off |
 
-Continuous parameters, `LineCount`, `reverse.delay` (knob only) and `InputMix`/`CrossSeed`
-(no effect in mono) are rejected. The stored state of each target is part of the preset: the
+Continuous parameters (including `CrossSeed`), `LineCount`, `reverse.delay` (knob only) and
+`InputMix` (no effect in mono) are rejected. The stored state of each target is part of the preset: the
 reverb parameters in `[preset.params.*]`, and `[preset.params.delay_lines] max` plus
 `[preset.params.reverse] enabled` / `direct_mix` for the three pedal functions (all 0.0 = off
 as shipped).
@@ -193,6 +199,12 @@ cancels the preset change on the FS 2 release.
 | Ctrl 4 | Late Reverberation Feedback | Adjusts amount of signal fed back through the late diffusion allpass chain. |
 | Ctrl 5 | Early Reverberation Dampening | Controls amount of dampening for the early reverb stage. Actual parameter name is "TapDecay" |
 | Ctrl 6 | Late Reverberation Decay | Adjust the decay time of the late reverberation stage. |
+| Ctrl 1 + FS 2 held | Pre-delay | Secondary knob bank (default map): delay before the reverb, 0-1000 ms |
+| Ctrl 2 + FS 2 held | Input high-pass | Cutoff 20-1000 Hz; switches the input high-pass on at the first turn |
+| Ctrl 3 + FS 2 held | Input low-pass | Cutoff 400-20000 Hz; switches the input low-pass on at the first turn |
+| Ctrl 4 + FS 2 held | Line modulation depth | Delay-line modulation amount, 0-2.5 ms |
+| Ctrl 5 + FS 2 held | Line modulation rate | Delay-line modulation rate, 0-5 Hz |
+| Ctrl 6 + FS 2 held | Reverse window | Reverse-delay window length, 20-2000 ms |
 | SW 1 | Delay Lines (default target `delay_lines.max`) | Off = the preset's `default_delay_lines` (2 in every shipped preset); On = its `max_delay_lines` (5, or 4 for "Through the Looking Glass"). |
 | SW 2 | Bloom (default target `early.isReverse`) | Reverses the order of multi-tap delay gains, resulting in subsequent taps getting louder rather than quietier. |
 | SW 3 | Reverse Delay (default target `reverse.enabled`) | Off = dry + reverb only; On = enables the reverse voice, routed per `reverse.direct_mix` (SW 4 by default: into the reverb tail, or mixed straight into the output). Its window length is the knob mapped to `reverse.delay` (Ctrl 6 secondary by default). |
@@ -200,9 +212,9 @@ cancels the preset change on the FS 2 release.
 | FS 1 | Bypass/Active | Bypass / effect engaged. Acts on **release**. A release after a 5 s hold, or while FS 2 is (or was, during the same press) held, does not toggle bypass. |
 | FS 1 (held 5 s) | Save preset | Stores the current sound into the current preset (survives power cycles; see "Saving and restoring presets"). Both LEDs blink 3× to confirm. |
 | FS 1 + FS 2 (held 5 s) | Restore factory preset | Reverts the current preset to its presets.toml values and erases its saved version. Both LEDs blink 3× to confirm. |
-| FS 2 | Cycle Preset | Tap: loads the next available Preset, starts at beginning after the last in the list. Acts on **release**. These are the same as the original Cloud Seed plugin presets, except for "Through the Looking Glass" |
+| FS 2 | Cycle Preset | Tap: loads the next available Preset, starts at beginning after the last in the list. Acts on **release**. Presets 1-9 are derived from the original Cloud Seed plugin presets ("Through the Looking Glass" capped at 4 delay lines); "Dark Plate" is adapted from Ghost Note Audio's CloudSeedCore |
 | FS 2 (held) | Secondary knob and toggle bank | While held, every knob controls its `knobN_b` target instead of `knobN_a`, and a toggle flip writes its `toggleN_b` target. The release skips the preset change if a secondary knob was turned or a toggle flipped during the hold, or if FS 1 was also pressed. |
 | LED 1 | Bypass/Active Indicator |Illuminated when effect is set to Active. Blinks 3× with LED 2 to confirm a save or restore. |
-| LED 2 | Preset indicator | Number of flashes = current preset number. Blinks 3× with LED 1 to confirm a save or restore. |
+| LED 2 | Preset indicator | Number of flashes = current preset number; off while bypassed. Blinks 3× with LED 1 to confirm a save or restore. |
 | Audio In 1 | Audio input | Mono only for Terrarium |
 | Audio Out 1 | Mix Out | Mono only for Terrarium |

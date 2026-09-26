@@ -145,7 +145,8 @@ FOOTSWITCH_1 + FOOTSWITCH_2 held 5 s: restore the current preset to its presets.
 ```
 
 **Footswitch gestures** ([src/footswitch_gestures.h](src/footswitch_gestures.h)): libdaisy's `Switch` is
-an 8-bit shift register clocked once per audio block: `Pressed()` is `state_ == 0xff` and clears
+an 8-bit shift register that `Debounce()` shifts at most once per ms (`switch.cpp:39`), i.e. once
+per 1 ms audio block: `Pressed()` is `state_ == 0xff` and clears
 1 ms after a release, while `FallingEdge()` is `state_ == 0x80` and only fires 7 ms later
 (`libdaisy/src/hid/switch.h:70-79`, `switch.cpp:44-47`). `FootswitchGestures` tracks both
 switches with private `bypassHeld` / `presetHeld` flags, each set on `Pressed()` and cleared
@@ -292,7 +293,7 @@ All presets allow 5 delay lines except "Through the Looking Glass"
   ([src/preset_bank.cpp](src/preset_bank.cpp)) into `PresetData::knobMap[bank][knob]`
 - `[preset.toggle_map]` requires all eight `toggleN_a` / `toggleN_b` keys (N = 1..4 =
   SWITCH_1..SWITCH_4). Each value is a quoted `"group.Parameter"` naming an on/off parameter
-  (`kToggleParams`: `isReverse`, the four filter/diffusion/shelf/cutoff enables, the two
+  (`kToggleParams`: `isReverse`, the seven filter/diffusion/shelf/cutoff enables, the two
   diffusion stage counts, `LateStageTap`, `Interpolation`) or one of the three pseudo-targets
   `"delay_lines.max"`, `"reverse.enabled"`, `"reverse.direct_mix"`. Parsed by
   `parseToggleMap()`/`parseToggleTarget()` ([src/preset_bank.cpp](src/preset_bank.cpp)) into
@@ -331,7 +332,7 @@ All presets allow 5 delay lines except "Through the Looking Glass"
 
 **Boot-time memory**: the parser allocates exclusively from a 512 KB bump arena carved from the
 head of `custom_pool` (`src/sdram_pool.cpp:48-57`), used between `hw.Init()` and
-`new CloudSeed::ReverbController(...)`. Peak measured usage is 141,696 B on x86-64 (smaller on
+`new CloudSeed::ReverbController(...)`. Peak measured usage is 142,968 B on x86-64 (smaller on
 32-bit ARM); the arena is abandoned - not freed - so the SDRAM pool starts at offset 0 for the
 reverb. Permanent SDRAM cost of the TOML system: zero.
 
@@ -602,7 +603,7 @@ scalars (a parameter value that is non-finite or outside 0..1; `max_delay_lines`
 (unknown group/parameter, wrong group, a runtime parameter, or - for toggles - a parameter not
 in `kToggleParams`), and a document too large for the boot parse arena - the host tool allocates
 through a replica of `TOML_ARENA_SIZE` (512 KB, 8-byte aligned, no reuse), so `presets.toml: 10
-presets valid, boot arena peak 141696 of 524288 bytes` is the same peak the pedal sees. Host
+presets valid, boot arena peak 142968 of 524288 bytes` is the same peak the pedal sees. Host
 pointers are 64-bit, so the reported peak over-estimates the 32-bit target: a pass here implies
 a fit on hardware. A near-miss should be fixed by raising `TOML_ARENA_SIZE` (`src/sdram_pool.cpp:48`),
 not by loosening the host check.
@@ -662,7 +663,7 @@ make program-dfu
 
 Both targets come from `libdaisy/core/Makefile:343-347` and require `dfu-util`. A `BOOT_SRAM`
 build cannot be flashed with `make program` (openocd) - libdaisy errors out on that path
-(`libdaisy/core/Makefile:335-336`). Same procedure as `README.md:36-43`.
+(`libdaisy/core/Makefile:335-336`). Same procedure as `README.md:50-59`.
 
 ### Compiler Configuration
 
@@ -748,8 +749,13 @@ and is handed straight to `SetParameter`, which applies the engine's own scaling
 `::daisy::Parameter` wrappers were removed when knob targets became data.
 
 To restrict a knob's travel, scale in `applyKnobTarget()` (`src/cloudseed.cpp:215-248`) before the
-`SetParameter` call, e.g. `value = 0.5f + 0.5f * value;` for the upper half of the range. Note
-that this affects every preset that maps a knob to that parameter.
+`SetParameter` call, e.g. `value = 0.5f + 0.5f * value;` for the upper half of the range, **and**
+apply the inverse for that parameter in `knobTargetValue()` (`src/cloudseed.cpp:272-293`), e.g.
+`(v - 0.5f) / 0.5f` clamped to 0..1. The takeover glide runs in knob space from
+`knobTargetValue()` to the pot, so without the inverse its first step writes `0.5 + 0.5 * stored`
+instead of `stored` - a jump. A stored value outside the knob's range still jumps to the nearest
+end of that range on the first write. Both changes affect every preset that maps a knob to that
+parameter.
 
 The knob response constants: `KNOB_SMOOTHING_COEFF` (`src/cloudseed.cpp:48`, the ADC one-pole), and in
 [src/knob_bank.h](src/knob_bank.h) `kKnobMoveThreshold` (how far a parked knob must move to take over),
@@ -861,8 +867,11 @@ ever flashed it would stop boot and blink both LEDs):
 - `blinks` is 1..20; `default_delay_lines` and `max_delay_lines` are each a whole number 1..5
   (a fraction or `nan` fails with `preset N: <key> must be a whole number 1..5`), and
   `default_delay_lines` must not exceed `max_delay_lines`
-  (`preset N: default_delay_lines exceeds max_delay_lines`); the ms fields are 0..60000 and
-  optional (defaults 150/150/5000); at most `kMaxPresets` (16) presets
+  (`preset N: default_delay_lines exceeds max_delay_lines`); the ms fields are optional
+  integers 0..60000 (defaults 150/150/5000; `readOptionalMs()` reads them with `toml_int_in`, so
+  a float such as `300.0` is silently ignored and the default used); `name` must be non-empty
+  and only its first 31 characters are kept (`kMaxPresetNameLen`); at most `kMaxPresets` (16)
+  presets
 - Every parameter value must be finite and within 0.0-1.0 (`preset N: 'Name' = V out of range
   0..1`): `AudioLib::ValueTables::Get` indexes its tables with the raw value, so anything else
   would read out of bounds on the pedal. The real-unit ranges are listed in the TOML header and
@@ -883,17 +892,24 @@ at the next boot.
 
 ### 4. Changing Number of Delay Lines
 
-**File**: [CloudSeed/ReverbChannel.h](CloudSeed/ReverbChannel.h)
+**Files**: [CloudSeed/ReverbChannel.h](CloudSeed/ReverbChannel.h),
+[src/preset_bank.cpp](src/preset_bank.cpp), [presets.toml](presets.toml)
 
-```cpp
-// Current: 5 delay lines for mono
-static const int TotalLineCount = 5;
+`TotalLineCount` (`CloudSeed/ReverbChannel.h:39`, currently 5) is how many `DelayLine`s the
+channel builds. `SetParameter(LineCount)` does not clamp, and `Process` loops over `lines[i]`
+for `i < lineCount` (`CloudSeed/ReverbChannel.h:210-213`, `:392-395`), so no preset may be able
+to select more lines than exist. Change these together:
+1. `static const int TotalLineCount = N;`
+2. The upper bound in `readLineCount()` (`src/preset_bank.cpp:188`, and the `1..5` in its error
+   message), so `make` rejects a `default_delay_lines` / `max_delay_lines` above N
+3. Every preset's `default_delay_lines` / `max_delay_lines` in presets.toml (nine ship
+   `max_delay_lines = 5.0`)
+4. The `1..5` wording in presets.toml's header, this file, README.md, and the expected messages
+   and 5.0 values in `tests/preset_bank_test.cpp` / `tests/fixtures/two_presets.toml`
 
-// To change to 4:
-static const int TotalLineCount = 4;
-```
-
-**Warning**: Changing delay line count affects memory usage and processing load.
+Lowering `TotalLineCount` alone still compiles and passes `make`, then indexes past `lines` the
+first time SWITCH_1 selects `max_delay_lines`. Raising it costs SDRAM pool memory and CPU per
+line ("Through the Looking Glass" already crackles above 4).
 
 ### 5. Modifying Switch Behavior
 
@@ -936,7 +952,10 @@ hw.StartAudio(audioCallback);
 
 Three sizes are coupled and must change together:
 - `DaisyPetal::Init()` sets the hardware block size to 48 (`libdaisy/src/daisy_petal.cpp:90`);
-  override it with `hw.SetAudioBlockSize(n)` before `StartAudio()`
+  override it with `hw.SetAudioBlockSize(n)` immediately after `hw.Init()`
+  (`src/cloudseed.cpp:512`). It must precede the block-size guard (`:519-520`) and the knob
+  `SetCoeff()` loop (`:546-547`): it re-runs `SetHidUpdateRates()`, which re-initialises every
+  knob's one-pole (see "ADC smoothing")
 - `AUDIO_BUFFER_SIZE` (`src/cloudseed.cpp:29`) sizes the file-scope `gInputBuffer`, `gWetBuffer`,
   `gReverseBuffer` and `gReverbInputBuffer` (`src/cloudseed.cpp:301-304`) and every callback loop;
   `main()` stops in `FatalErrorLoop()` if `hw.AudioBlockSize()` differs (`src/cloudseed.cpp:519-520`)
@@ -946,6 +965,20 @@ Three sizes are coupled and must change together:
 Raising the hardware block size alone stops boot at that guard; raising it with
 `AUDIO_BUFFER_SIZE` but not `bufferSize` overruns the controller's arrays.
 Smaller blocks = lower latency, higher CPU load; larger blocks = higher latency, lower CPU load.
+
+These are counted in callbacks and assume the 1 ms block (48 samples at 48 kHz); rescale them
+with the block period:
+- `kKnobGlideBlocks` (`src/knob_bank.h:26`): 50 blocks = the 50 ms takeover glide
+- `kLongHoldBlocks` (`src/footswitch_gestures.h:24`): 5000 blocks = the 5 s save / restore holds
+- `KNOB_SMOOTHING_COEFF` (`src/cloudseed.cpp:48`): a per-callback one-pole coefficient, ~20 ms
+  at 1 kHz
+- libdaisy's `Switch::Debounce()` shifts at most once per ms (`libdaisy/src/hid/switch.cpp:39`):
+  with longer blocks it shifts once per block, so the 8-shift press latch and 7-shift release
+  edge stretch with the block
+
+Everything timed with `System::GetNow()` / `System::Delay()` (the blink patterns, the
+confirmation blink, the 3 s settings save, the 200 ms knob settle loop) is independent of the
+block size.
 
 ### 7. Adding CV Control
 
@@ -1019,7 +1052,7 @@ per-call lookup function. Both functions only `Set()` LED2; the audio callback's
 
 **CloudSeed Audio Callback** (`audioCallback()` at `src/cloudseed.cpp:438-489` - runs once per
 48-sample block, i.e. at 1 kHz):
-1. Process analog/digital controls and push both LEDs with `Led::Update()` (`:441-443`). Once
+1. Process analog/digital controls and push both LEDs with `UpdateLeds()` (`:441-443`, two `Led::Update()` calls). Once
    audio runs this is the only caller of `Update()`: it is a read-modify-write that would race
    with the main loop
 2. `processFootswitches()` (`:306-331`): one `gFootswitches.Update()` call with both switches'
@@ -1120,9 +1153,22 @@ through (`:448-451`).
 
 **Performance Architecture**:
 - **Audio callback**: Time-critical, optimized for low latency
-  - Only parameter smoothing and audio processing
+  - Control scanning (knobs, toggles, footswitch gestures), engine parameter writes, and audio
+    processing
   - Sets trigger flags for heavy operations
   - No flash writes or preset loading
+  - **Not allocation-free**: every knob or toggle write goes through
+    `ReverbChannel::SetParameter`, and several targets rebuild engine state with heap allocation
+    inside the audio interrupt. `LineDelay`, `LineDecay`, `LineModAmount`, `LineModRate`,
+    `LateDiffusionModAmount`, `LateDiffusionModRate`, `DelaySeed` and `CrossSeed` run
+    `UpdateLines()` → `AudioLib::ShaRandom::Generate()` (SHA-256 plus several `std::vector`s,
+    `CloudSeed/AudioLib/ShaRandom.cpp:10-49`); `TapSeed`, `DiffusionSeed` and
+    `PostDiffusionSeed` re-seed a diffuser the same way; `TapCount`, `TapLength`, `TapGain`,
+    `TapDecay` and `isReverse` rebuild the taps in `MultitapDiffuser::Update()` (local vectors,
+    `CloudSeed/MultitapDiffuser.h:153-173`). Each runs once per write, i.e. up to once per block
+    while a knob turns - in the default map KNOB_5 (`TapDecay`), KNOB_6 (`LineDecay`), and the
+    secondary KNOB_4 / KNOB_5 (`LineModAmount` / `LineModRate`). The heap grows from `end` in
+    RAM_D2 (see Memory Usage)
 - **Main loop**: Non-critical background tasks
   - Preset switching (includes buffer clearing)
   - Flash memory writes (settings, user preset save/restore)
@@ -1141,8 +1187,8 @@ This separation prevents audio glitches during preset changes and flash writes.
 #include "daisy_seed.h"
 using namespace daisy;
 
-// In setup:
-hw.seed.StartLog(true);
+// In setup (true would block boot until a USB serial host opens the port):
+hw.seed.StartLog(false);
 
 // Anywhere:
 hw.seed.PrintLine("Debug: value = %f", some_value);
@@ -1163,8 +1209,9 @@ block (`src/cloudseed.cpp:443`), and nothing else may call it after `hw.StartAud
 read-modify-write that races with the callback). Only before `StartAudio()` must you call
 `UpdateLeds()` yourself.
 
-Caveat: `ServicePresetBlink()` (`src/pedal_leds.cpp:67-113`) drives LED2 on every main-loop pass and
-will overwrite debug values unless that call is removed. LED1 is likewise re-set on every
+Caveat: `ServicePresetBlink()` (`src/pedal_leds.cpp:67-113`) runs on every main-loop pass and sets
+LED2 at each blink transition (and turns it off while bypassed), so it overwrites debug values
+unless that call is removed. LED1 is likewise re-set on every
 bypass toggle (`src/cloudseed.cpp:316`), and both LEDs are driven by the save/restore confirmation
 blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
 
@@ -1218,8 +1265,8 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
   (`libdaisy/core/STM32H750IB_sram.lds:244-251`), which is where `DelayLine`'s `tempBuffer`,
   `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:44-46`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 205,188 B of 480KB (41.75%). Of that, the
-  embedded `presets.toml` blob is 47,644 B (`build/presets_toml.o` - it carries the
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 206,452 B of 480KB (42.00%). Of that, the
+  embedded `presets.toml` blob is 48,912 B (`build/presets_toml.o` - it carries the
   per-preset `[preset.knob_map]`, `[preset.toggle_map]`, `[preset.params.reverse]` and
   `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 7,786 B
 - DTCMRAM: 27,988 B of 128KB (21.35%) — includes the 4,804 B `gPresets` bank (40 B of that per
@@ -1315,8 +1362,9 @@ Key changes in this fork:
     callback passes audio through and makes no engine write, so a load cannot be read
     half-applied
 20. **Per-preset user save / factory restore**: FOOTSWITCH_1 held 5 s stores the engine state
-    (isReverse and the three toggle pseudo-values included), the reverse window, and the
-    current toggle-derived delay-line count into the current preset's slot of a QSPI
+    (isReverse and the three toggle pseudo-values included; `delay_lines.max` is stored as its
+    on/off state, the line counts always come from presets.toml) and the reverse window into the
+    current preset's slot of a QSPI
     `UserPresets` store (offset 0x1000); FOOTSWITCH_1 + FOOTSWITCH_2 held 5 s clears the slot
     and reloads the presets.toml values. Both are confirmed by LED1 + LED2 blinking 3 × 80 ms.
     The store is stamped with a hash of the firmware image and discarded when it differs, so
@@ -1340,8 +1388,8 @@ Check git history for recent changes:
 git log --oneline -10
 ```
 
-Current branch: `restructure`. Run the command above for recent changes; do not restate
-them here.
+Run `git branch --show-current` for the current branch and the command above for recent
+changes; do not restate them here.
 
 ## Quick Reference Card
 
@@ -1368,7 +1416,7 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 ### Key Concepts
 - Buffer size: 48 samples
 - Sample rate: 48kHz (typical)
-- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena; peak 141,696 B)
+- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena; peak 142,968 B)
 - Delay lines: 5 (mono Terrarium), toggled per preset between `default_delay_lines` and
   `max_delay_lines` in presets.toml (default SWITCH_1, `[preset.toggle_map]`)
 - Presets: 10, defined in presets.toml, `gPresets.count` at runtime (max `kMaxPresets` = 16)

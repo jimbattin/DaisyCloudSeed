@@ -1,12 +1,23 @@
 # CloudSeed reverb presets for the Terrarium pedal.
 #
-# This file is compiled into the firmware image (see presets_toml.s) and parsed
-# once at boot. Edit values here, then rebuild and reflash:
+# This file is compiled into the firmware image (see src/presets_toml.s) and
+# parsed once at boot. Edit values here, then rebuild and reflash:
 #     make && make program-dfu
+# Reflashing any change to this file (comments included) changes the firmware
+# image, which discards every preset saved on the pedal (FS1 held 5 s).
 #
-# Rules enforced by the parser (a violation stops boot and blinks both LEDs):
+# Rules enforced by the parser. `make` refuses to build firmware from a file that
+# breaks one; if such a file ever reached the pedal it would stop boot and blink
+# both LEDs at 5 Hz:
 #   * Preset order is the order below. The index is stored in QSPI flash, so
-#     reordering or deleting presets invalidates saved settings.
+#     reordering or deleting presets invalidates saved settings (bump
+#     SETTINGS_VERSION in src/pedal_storage.cpp in the same change).
+#   * 1 to 16 [[preset]] tables. Each needs a non-empty name (only the first 31
+#     characters are kept) and blinks = 1..20. led_on_ms, led_off_ms and
+#     led_pause_ms are optional integers 0..60000 (defaults 150 / 150 / 5000); a
+#     non-integer such as 300.0 is ignored and the default is used.
+#   * Every parameter value must be a number within 0.0-1.0; anything else,
+#     nan included, is rejected.
 #   * Every [preset.params.*] group must contain exactly the keys listed for it;
 #     a key in the wrong group, an unknown key, or a missing key is an error.
 #   * LineCount must NOT appear: it is driven live by the "delay_lines.max"
@@ -59,14 +70,16 @@
 #     EarlyDiffusionModRate    allpass delay modulation rate, 0-5 Hz
 #
 #   [preset.params.late]  Late reverb lines: the feedback delay network that generates the tail.
-#     LineDelay       delay per line, 20-1000 ms (line count comes from the "delay_lines.max" toggle target, not this file)
+#     LineDelay       base delay per line, 20-1000 ms; each line scales it by a seeded 0.5-1.5x (line count comes from the "delay_lines.max" toggle target, not this file)
 #     LineDecay       tail decay time, 0.05-60 s
 #     LineModAmount   line delay modulation depth, 0-2.5 ms
 #     LineModRate     line delay modulation rate, 0-5 Hz
 #     LateStageTap    on when >= 0.5: each line outputs from before its delay (after the late
 #                     diffuser, which then runs first), so the tail starts one LineDelay sooner;
 #                     off: output after the delay
-#     Interpolation   on when >= 0.5: fractional-delay interpolation (smoother modulation, more CPU)
+#     Interpolation   on when >= 0.5: fractional-delay interpolation in the late-diffuser allpasses
+#                     (more CPU). The line delays and the early diffuser always interpolate, so
+#                     this has no effect while LateDiffusionEnabled is off
 #
 #   [preset.params.late_diffusion]  Late diffusion: allpass chain inside each delay line.
 #     LateDiffusionEnabled    on when >= 0.5: runs the per-line allpass diffuser
@@ -91,7 +104,10 @@
 #     DiffusionSeed      early diffuser seed, value x 1000000
 #     DelaySeed          delay line length seed, value x 1000000
 #     PostDiffusionSeed  late diffuser seed, value x 1000000
-#     CrossSeed          stereo seed offset; no audible effect in this mono fork
+#     CrossSeed          blends each early seed series with a second one from the bitwise-complement
+#                        seed (0 = TapSeed/DiffusionSeed series only, 1 = complement only): changes the
+#                        early tap pattern and early diffuser. The delay lines and late diffusers
+#                        ignore it in this mono fork
 #
 #   [preset.params.output]  Output mix: level of each stage in the final signal.
 #     DryOut       dry signal level, 2-decade curve
@@ -124,8 +140,9 @@
 #   late_eq.HighShelfEnabled              high shelf on the tail on/off
 #   late_eq.CutoffEnabled                 in-loop low-pass on the tail on/off
 #   late.LateStageTap                     on = each line outputs before its delay (tail starts one LineDelay sooner)
-#   late.Interpolation                    more CPU; may crackle at 5 lines
-# Not toggle targets: continuous parameters (a toggle would slam them to 0/1), LineCount (use delay_lines.max), reverse.delay (knob only), InputMix/CrossSeed (no effect in mono).
+#   late.Interpolation                    late-diffuser allpass interpolation on/off; more CPU
+# Not toggle targets: continuous parameters (a toggle would slam them to 0/1; CrossSeed is one),
+# LineCount (use delay_lines.max), reverse.delay (knob only), InputMix (no effect in mono).
 #
 
 # --------------------------------------------------------------------------
