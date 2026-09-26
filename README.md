@@ -3,18 +3,22 @@ This is a fork from https://github.com/optilude/DaisyCloudSeed a fork that impro
 
 This fork extends those capabilities and adds a few extras:
 
-- Switch remap: SW1 selects delay-line count (2 vs. the preset maximum), SW3 engages a
-  classic Reverse Delay, SW4 routes that reverse (off = into the reverb's wet tail, on =
-  straight into the output mix), and SW2 keeps the "Bloom" effect, similar to a "reverse
+- Switch remap: SW1 selects delay-line count (the preset's default vs. its maximum), SW3
+  engages a classic Reverse Delay, SW4 routes that reverse (off = into the reverb's wet tail,
+  on = straight into the output mix), and SW2 keeps the "Bloom" effect, similar to a "reverse
   reverb" (Bloom reverses the order of tap gains. Has no effect on patches with a single tap.)
 - Per-preset knob mapping: each preset's `[preset.knob_map]` in
   [presets.toml](presets.toml) assigns all six knobs a primary function and a **secondary**
   function reached by holding the **preset footswitch (FS 2)** down
+- Per-preset toggle mapping: each preset's `[preset.toggle_map]` assigns all four toggle
+  switches a primary and a secondary (FS 2 held) on/off target; the defaults are the SW1-SW4
+  functions above
 - More program storage (Moved the application to SRAM)
 - Wider range of preset support offered by placing a limit on the number of delay lines for each preset
 - *Through the Looking Glass* is available as preset 9 (Delay lines capped at 4 for this one only)
 - *Dark Plate*: Preset #10 mostly adapted from from Ghost Note Audio's CloudSeedCore
-- Delay line count is toggled by SW1 (off = 2 lines, on = the preset's maximum, up to 5)
+- Delay line count is toggled by SW1 between each preset's `default_delay_lines` and
+  `max_delay_lines` (both set in presets.toml; 2 and up to 5 as shipped)
 - Bypass state is saved between power cycles
 - Per-preset user save: hold FS 1 for 5 s to store the current sound into the current preset;
   hold FS 1 + FS 2 together for 5 s to restore that preset to its factory values. Saved
@@ -55,8 +59,9 @@ make program-dfu
 ## Editing presets
 
 All ten presets live in [presets.toml](presets.toml) at the repo root - names, LED blink
-timing, the per-preset delay-line cap, all 45 reverb parameters, and the reverse-delay window
-(`[preset.params.reverse] delay`). The file is embedded into the firmware image, so changing a
+timing, the per-preset default and maximum delay-line counts, all 46 reverb parameters, the
+knob and toggle maps, the reverse-delay window (`[preset.params.reverse] delay`), and the
+stored state of every toggle target. The file is embedded into the firmware image, so changing a
 preset is:
 ```
 # edit presets.toml, then:
@@ -80,7 +85,8 @@ Preset order is stored in flash: append new `[[preset]]` entries at the end, and
 presets.toml is the **factory** version of every preset and is never modified on the pedal.
 
 - **Save**: hold FS 1 for 5 s. The current sound - all reverb parameters, including every knob
-  change, plus the reverse-delay window - replaces the current preset. Only that preset is
+  change, plus the reverse-delay window and the state of every toggle target - replaces the
+  current preset. Only that preset is
   affected. Both LEDs blink 3 times quickly to confirm, and releasing FS 1 does not toggle
   bypass.
 - **Restore factory**: hold FS 1 and FS 2 together for 5 s. They need not go down or come up at
@@ -91,7 +97,8 @@ presets.toml is the **factory** version of every preset and is never modified on
 Saved presets are stored in QSPI flash alongside the bypass/preset settings and survive power
 cycles. Flashing any different firmware (including a presets.toml edit) discards every saved
 preset, so the pedal boots with the factory versions. Re-flashing a byte-identical `.bin` keeps
-them. The knob map, delay-line cap, and blink timing always come from presets.toml.
+them. The knob and toggle maps, the delay-line counts, and blink timing always come from
+presets.toml.
 
 ## Knob mapping
 
@@ -108,7 +115,8 @@ knob6_b = "reverse.delay"        # the reverse-delay window length ([preset.para
 Each value is a quoted `"group.Parameter"` naming a parameter from that preset's own
 `[preset.params.<group>]` section, or the pseudo-target `"reverse.delay"`. All twelve keys are
 required and `make` rejects an unknown knob key, an unknown group or parameter, a parameter
-that lives in a different group, and `LineCount`/`isReverse` (those belong to SW1/SW2).
+that lives in a different group, and `LineCount` (it belongs to the `delay_lines.max` toggle
+target).
 
 Knobs are **absolute**: once a knob has taken over, its position is the parameter value. After
 power-up, a preset change, or switching knob banks (including letting go of FS 2)
@@ -126,8 +134,54 @@ if none did, the release cycles to the next preset as a tap would. A knob brushe
 1% of its travel does not count.
 
 `input.HighPass` and `input.LowPass` switch their filter on the first time their knob is
-turned; every other gated parameter (the shelves, the in-loop cutoff, the diffusers) must be
-enabled in `[preset.params.*]` to be audible.
+turned (unless a toggle targets that filter's enable - then the toggle owns it); every other
+gated parameter (the shelves, the in-loop cutoff, the diffusers) must be enabled in
+`[preset.params.*]` or by a toggle to be audible.
+
+## Toggle mapping
+
+Every preset also carries a `[preset.toggle_map]` table naming what each toggle switch does
+(toggle1..toggle4 = SW 1..SW 4):
+
+```toml
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"      # primary: SW 1 normally
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"      # secondary: SW 1 flipped while FS 2 is held
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+```
+
+All eight keys are required. Accepted targets (lever up = on):
+
+| Target | Notes |
+| --- | --- |
+| `delay_lines.max` | Off = the preset's `default_delay_lines`, on = its `max_delay_lines` (default SW 1) |
+| `early.isReverse` | Bloom (default SW 2) |
+| `reverse.enabled` | Reverse voice on (default SW 3) |
+| `reverse.direct_mix` | Off = reverse feeds the reverb tail, on = reversed reverb mixed into the output (default SW 4) |
+| `input.HiPassEnabled`, `input.LowPassEnabled` | While a toggle targets one, knobs on `HighPass` / `LowPass` no longer switch that filter on |
+| `early_diffusion.DiffusionEnabled`, `late_diffusion.LateDiffusionEnabled` | Flipping clears that diffuser's buffers |
+| `early_diffusion.DiffusionStages`, `late_diffusion.LateDiffusionStages` | Off = 1 allpass stage, on = 2; a flip overwrites the stored stage value with 0.0/1.0 |
+| `late_eq.LowShelfEnabled`, `late_eq.HighShelfEnabled`, `late_eq.CutoffEnabled` | |
+| `late.LateStageTap` | |
+| `late.Interpolation` | More CPU; may crackle at 5 lines |
+
+Continuous parameters, `LineCount`, `reverse.delay` (knob only) and `InputMix`/`CrossSeed`
+(no effect in mono) are rejected. The stored state of each target is part of the preset: the
+reverb parameters in `[preset.params.*]`, and `[preset.params.delay_lines] max` plus
+`[preset.params.reverse] enabled` / `direct_mix` for the three pedal functions (all 0.0 = off
+as shipped).
+
+Toggles are **parked** like knobs: after power-up, a preset change, or switching banks the
+preset's stored values apply whatever the levers say, and a lever writes nothing until it is
+flipped. Then it sets its target to the lever position, and follows the lever from there. So
+after a preset loads with a lever already up, flip it down and up again to turn its target on.
+Flipping a toggle while FS 2 is held writes its `_b` target and, like a secondary knob turn,
+cancels the preset change on the FS 2 release.
 
 # Control
 
@@ -139,15 +193,15 @@ enabled in `[preset.params.*]` to be audible.
 | Ctrl 4 | Late Reverberation Feedback | Adjusts amount of signal fed back through the late diffusion allpass chain. |
 | Ctrl 5 | Early Reverberation Dampening | Controls amount of dampening for the early reverb stage. Actual parameter name is "TapDecay" |
 | Ctrl 6 | Late Reverberation Decay | Adjust the decay time of the late reverberation stage. |
-| SW 1 | Delay Lines | Off = 2 delay lines; On = the current preset's maximum (5, or 4 for "Through the Looking Glass"). |
-| SW 2 | Bloom | Reverses the order of multi-tap delay gains, resulting in subsequent taps getting louder rather than quietier. |
-| SW 3 | Reverse Delay | Off = dry + reverb only; On = enables the reverse voice, routed per SW4 (into the reverb tail, or mixed straight into the output). Its window length is the knob mapped to `reverse.delay` (Ctrl 6 secondary by default). |
-| SW 4 | Reverse Routing | Chooses where the SW3 reverse goes. Off = into the reverb (the reversed guitar feeds the wet tail; the forward dry pass-through stays clean via dry-gain cancellation). On = direct mix (a reversed copy of the reverb output is mixed straight into the output). Only audible when SW3 is on. |
+| SW 1 | Delay Lines (default target `delay_lines.max`) | Off = the preset's `default_delay_lines` (2 in every shipped preset); On = its `max_delay_lines` (5, or 4 for "Through the Looking Glass"). |
+| SW 2 | Bloom (default target `early.isReverse`) | Reverses the order of multi-tap delay gains, resulting in subsequent taps getting louder rather than quietier. |
+| SW 3 | Reverse Delay (default target `reverse.enabled`) | Off = dry + reverb only; On = enables the reverse voice, routed per `reverse.direct_mix` (SW 4 by default: into the reverb tail, or mixed straight into the output). Its window length is the knob mapped to `reverse.delay` (Ctrl 6 secondary by default). |
+| SW 4 | Reverse Routing (default target `reverse.direct_mix`) | Chooses where the reverse goes. Off = into the reverb (the reversed guitar feeds the wet tail; the forward dry pass-through stays clean via dry-gain cancellation). On = direct mix (a reversed copy of the reverb output is mixed straight into the output). Only audible when the reverse voice is on. |
 | FS 1 | Bypass/Active | Bypass / effect engaged. Acts on **release**. A release after a 5 s hold, or while FS 2 is (or was, during the same press) held, does not toggle bypass. |
 | FS 1 (held 5 s) | Save preset | Stores the current sound into the current preset (survives power cycles; see "Saving and restoring presets"). Both LEDs blink 3× to confirm. |
 | FS 1 + FS 2 (held 5 s) | Restore factory preset | Reverts the current preset to its presets.toml values and erases its saved version. Both LEDs blink 3× to confirm. |
 | FS 2 | Cycle Preset | Tap: loads the next available Preset, starts at beginning after the last in the list. Acts on **release**. These are the same as the original Cloud Seed plugin presets, except for "Through the Looking Glass" |
-| FS 2 (held) | Secondary knob bank | While held, every knob controls its `knobN_b` target instead of `knobN_a`. The release skips the preset change if a secondary knob was turned during the hold, or if FS 1 was also pressed. |
+| FS 2 (held) | Secondary knob and toggle bank | While held, every knob controls its `knobN_b` target instead of `knobN_a`, and a toggle flip writes its `toggleN_b` target. The release skips the preset change if a secondary knob was turned or a toggle flipped during the hold, or if FS 1 was also pressed. |
 | LED 1 | Bypass/Active Indicator |Illuminated when effect is set to Active. Blinks 3× with LED 2 to confirm a save or restore. |
 | LED 2 | Preset indicator | Number of flashes = current preset number. Blinks 3× with LED 1 to confirm a save or restore. |
 | Audio In 1 | Audio input | Mono only for Terrarium |

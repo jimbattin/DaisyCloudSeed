@@ -10,7 +10,8 @@ constexpr int kMaxPresets       = 16;
 constexpr int kMaxPresetNameLen = 32;
 
 constexpr int kKnobCount = 6;   // knob1..knob6
-constexpr int kKnobBanks = 2;   // 0 = primary ("_a"), 1 = secondary ("_b")
+constexpr int kControlBanks = 2;  // 0 = primary ("_a"), 1 = secondary ("_b")
+constexpr int kToggleCount  = 4;  // toggle1..toggle4 = SWITCH_1..SWITCH_4
 
 // What a knob writes to. Param targets index PresetData::params (i.e.
 // (int)Parameter); ReverseDelay is the reverse-delay window length, which is not
@@ -22,18 +23,41 @@ struct KnobTarget {
     uint8_t paramIndex;  // valid only when kind == KnobTarget_Param
 };
 
+// What a toggle switch writes to: on (lever up) = 1.0, off = 0.0. Param targets
+// are the on/off Parameters accepted by the parser (kToggleParams); the others
+// are pedal functions with no Parameter slot, stored as 0.0/1.0 (on when >= 0.5).
+enum ToggleTargetKind : uint8_t {
+    ToggleTarget_Param            = 0,
+    ToggleTarget_DelayLinesMax    = 1,  // "delay_lines.max": off = default_delay_lines, on = max_delay_lines
+    ToggleTarget_ReverseEnabled   = 2,  // "reverse.enabled": reverse voice on/off
+    ToggleTarget_ReverseDirectMix = 3,  // "reverse.direct_mix": off = into reverb, on = direct mix
+};
+
+struct ToggleTarget {
+    ToggleTargetKind kind;
+    uint8_t paramIndex;  // valid only when kind == ToggleTarget_Param
+};
+
 struct PresetData {
     char     name[kMaxPresetNameLen];
     int      blinks;
     uint32_t onDurationMs;
     uint32_t offDurationMs;
     uint32_t pauseAfterMs;
+    float    defaultDelayLines;  // lines while "delay_lines.max" is off; whole number 1..maxDelayLines
     float    maxDelayLines;
     float    params[(int)Parameter::Count];
     // [preset.params.reverse] delay: normalized reverse-window length (knob target "reverse.delay")
     float    reverseDelay;
+    // Stored state of the toggle pseudo-targets, 0..1, on when >= 0.5:
+    // [preset.params.delay_lines] max, [preset.params.reverse] enabled / direct_mix
+    float    delayLinesMax;
+    float    reverseEnabled;
+    float    reverseDirectMix;
     // [bank][knob]; bank 0 = primary, bank 1 = secondary (preset footswitch (FS2) held)
-    KnobTarget knobMap[kKnobBanks][kKnobCount];
+    KnobTarget knobMap[kControlBanks][kKnobCount];
+    // [bank][toggle]; bank 0 = primary, bank 1 = secondary (preset footswitch (FS2) held)
+    ToggleTarget toggleMap[kControlBanks][kToggleCount];
 };
 
 struct PresetBank {

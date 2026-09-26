@@ -48,10 +48,9 @@ namespace CloudSeed
 		{
 			for (int i = 0; i < (int)Parameter::Count; i++)
 			{
-				// LineCount comes from SWITCH_1 and isReverse from SWITCH_2 at audio
-				// rate; retaining them here reproduces the old behaviour, where those
-				// two slots were deliberately left out of every initFactory* body.
-				if (i == (int)Parameter::LineCount || i == (int)Parameter::isReverse)
+				// LineCount comes from the "delay_lines.max" toggle target at audio
+				// rate; every other slot, isReverse (bloom) included, is preset data.
+				if (i == (int)Parameter::LineCount)
 					continue;
 				parameters[i] = values[i];
 			}
@@ -99,7 +98,7 @@ namespace CloudSeed
 			case Parameter::TapLength:                 return (int)(P(Parameter::TapLength) * 500);
 			case Parameter::TapGain:                   return ValueTables::Get(P(Parameter::TapGain), ValueTables::Response2Dec);
 			case Parameter::TapDecay:                  return P(Parameter::TapDecay);
-			case Parameter::isReverse:                 return P(Parameter::isReverse);
+			case Parameter::isReverse:                 return P(Parameter::isReverse) < 0.5 ? 0.0 : 1.0;
 
 				// Diffusion
 

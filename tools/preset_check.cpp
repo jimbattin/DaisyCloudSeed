@@ -1,8 +1,9 @@
 // Host-side check that presets.toml is accepted by the firmware's own parser.
-// Usage: preset_check --validate|--print-knob-map <presets.toml>
-// --validate        prints a one-line summary; exits 1 (with the parser's error
-//                   message on stderr) if the pedal would reject the file.
-// --print-knob-map  prints the resolved knob assignments of every preset.
+// Usage: preset_check --validate|--print-knob-map|--print-toggle-map <presets.toml>
+// --validate          prints a one-line summary; exits 1 (with the parser's error
+//                     message on stderr) if the pedal would reject the file.
+// --print-knob-map    prints the resolved knob assignments of every preset.
+// --print-toggle-map  prints the resolved toggle assignments of every preset.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,13 +76,26 @@ static void* arenaAlloc(size_t size)
 
 static void arenaFree(void*) {}
 
+static const char* toggleTargetName(const ToggleTarget& t)
+{
+    switch (t.kind)
+    {
+        case ToggleTarget_DelayLinesMax: return "delay_lines.max";
+        case ToggleTarget_ReverseEnabled: return "reverse.enabled";
+        case ToggleTarget_ReverseDirectMix: return "reverse.direct_mix";
+        case ToggleTarget_Param: break;
+    }
+    return kParameterNames[t.paramIndex];
+}
+
 int main(int argc, char** argv)
 {
     enum Mode
     {
         Mode_None,
         Mode_Validate,
-        Mode_PrintKnobMap
+        Mode_PrintKnobMap,
+        Mode_PrintToggleMap
     } mode           = Mode_None;
     const char* path = NULL;
     bool        bad  = false;
@@ -93,6 +107,8 @@ int main(int argc, char** argv)
             flag = Mode_Validate;
         else if (strcmp(argv[i], "--print-knob-map") == 0)
             flag = Mode_PrintKnobMap;
+        else if (strcmp(argv[i], "--print-toggle-map") == 0)
+            flag = Mode_PrintToggleMap;
 
         if (flag != Mode_None)
         {
@@ -108,7 +124,9 @@ int main(int argc, char** argv)
 
     if (bad || mode == Mode_None || !path)
     {
-        fprintf(stderr, "usage: %s --validate|--print-knob-map <presets.toml>\n",
+        fprintf(stderr,
+                "usage: %s --validate|--print-knob-map|--print-toggle-map "
+                "<presets.toml>\n",
                 argv[0]);
         return 2;
     }
@@ -132,12 +150,12 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    static const char* const kBankSuffix[2] = {"a", "b"};
     if (mode == Mode_PrintKnobMap)
     {
-        static const char* const kBankSuffix[2] = {"a", "b"};
         for (int p = 0; p < bank.count; p++)
         {
-            for (int b = 0; b < kKnobBanks; b++)
+            for (int b = 0; b < kControlBanks; b++)
             {
                 for (int k = 0; k < kKnobCount; k++)
                 {
@@ -147,6 +165,21 @@ int main(int argc, char** argv)
                                ? "reverse.delay"
                                : kParameterNames[t.paramIndex]);
                 }
+            }
+        }
+        return 0;
+    }
+
+    if (mode == Mode_PrintToggleMap)
+    {
+        for (int p = 0; p < bank.count; p++)
+        {
+            for (int b = 0; b < kControlBanks; b++)
+            {
+                for (int t = 0; t < kToggleCount; t++)
+                    printf("preset %d toggle%d_%s = %s\n", p, t + 1,
+                           kBankSuffix[b],
+                           toggleTargetName(bank.presets[p].toggleMap[b][t]));
             }
         }
         return 0;

@@ -9,16 +9,25 @@
 #     reordering or deleting presets invalidates saved settings.
 #   * Every [preset.params.*] group must contain exactly the keys listed for it;
 #     a key in the wrong group, an unknown key, or a missing key is an error.
-#   * LineCount and isReverse must NOT appear: they are driven live by SWITCH_1
-#     (delay line count) and SWITCH_2 (bloom).
+#   * LineCount must NOT appear: it is driven live by the "delay_lines.max"
+#     toggle target, which selects default_delay_lines (off) or max_delay_lines (on).
+#   * default_delay_lines and max_delay_lines are whole numbers 1..5, both
+#     required, and default_delay_lines must not exceed max_delay_lines.
 #   * Every preset needs a [preset.knob_map] with all twelve knobN_a / knobN_b
 #     keys. Each value is a quoted "group.Parameter" naming a parameter from that
 #     preset's own [preset.params.<group>] section, or "reverse.delay" for the
 #     reverse-delay window length ([preset.params.reverse] delay). Secondary (_b) functions are reachable by
 #     holding the preset footswitch (FS2) down while turning the knob.
+#   * Every preset needs a [preset.toggle_map] with all eight toggleN_a /
+#     toggleN_b keys (N = 1..4 = SWITCH_1..SWITCH_4), each naming a TOGGLE TARGET
+#     from the list below; _b is written by flips made while FS2 is held. Toggles
+#     are parked like knobs: after power-up, a preset change or a bank change the
+#     preset's stored values apply and a lever writes only once it is flipped,
+#     then sets its target to the lever position (up = on).
 #   * input.HighPass / input.LowPass are enabled automatically the first time
-#     their knob is turned; every other switch-gated parameter (shelves, cutoff,
-#     the diffusers) must be enabled in [preset.params.*] to be audible.
+#     their knob is turned (unless a toggle targets that filter's enable); every
+#     other switch-gated parameter (shelves, cutoff, the diffusers) must be
+#     enabled in [preset.params.*] or by a toggle to be audible.
 #
 # Every parameter value is normalized 0.0-1.0. The engine maps it to the real
 # range noted in the comments below.
@@ -39,6 +48,7 @@
 #     TapLength  time spread of the taps, 0-500 ms
 #     TapGain    gain of the tap bank, 2-decade curve
 #     TapDecay   how fast tap gain falls across the bank, 0-1
+#     isReverse  Bloom: on when >= 0.5, reverses the early tap gain order (default SWITCH_2 target)
 #
 #   [preset.params.early_diffusion]  Early diffusion: allpass chain that smears the early reflections.
 #     DiffusionEnabled         on when >= 0.5: runs the early allpass diffuser
@@ -49,7 +59,7 @@
 #     EarlyDiffusionModRate    allpass delay modulation rate, 0-5 Hz
 #
 #   [preset.params.late]  Late reverb lines: the feedback delay network that generates the tail.
-#     LineDelay       delay per line, 20-1000 ms (line count comes from SWITCH_1, not this file)
+#     LineDelay       delay per line, 20-1000 ms (line count comes from the "delay_lines.max" toggle target, not this file)
 #     LineDecay       tail decay time, 0.05-60 s
 #     LineModAmount   line delay modulation depth, 0-2.5 ms
 #     LineModRate     line delay modulation rate, 0-5 Hz
@@ -87,8 +97,33 @@
 #     EarlyOut     early reflection level, 2-decade curve
 #     MainOut      late reverb level, 2-decade curve
 #
-#   [preset.params.reverse]  Reverse voice (SWITCH_3 on; SWITCH_4 picks routing).
-#     delay   reverse window length, 20-2000 ms (3-octave curve; 0.4771 = 500 ms)
+#   [preset.params.delay_lines]  Delay line count (toggle target "delay_lines.max").
+#     max   on when >= 0.5: max_delay_lines lines, else default_delay_lines
+#
+#   [preset.params.reverse]  Reverse voice ("reverse.enabled" on; "reverse.direct_mix" picks routing).
+#     delay       reverse window length, 20-2000 ms (3-octave curve; 0.4771 = 500 ms)
+#     enabled     on when >= 0.5: the reverse voice plays (default SWITCH_3 target)
+#     direct_mix  on when >= 0.5: reversed reverb mixed into the output; off: reverse
+#                 feeds the reverb tail (default SWITCH_4 target)
+#
+# TOGGLE TARGETS (values accepted in [preset.toggle_map]):
+#   delay_lines.max                       delay line count (default SWITCH_1)
+#   early.isReverse                       Bloom (default SWITCH_2)
+#   reverse.enabled                       reverse voice on (default SWITCH_3)
+#   reverse.direct_mix                    off = reverse feeds the reverb tail, on = reversed reverb
+#                                         mixed into the output (default SWITCH_4)
+#   input.HiPassEnabled                   while a toggle targets it, knobs on HighPass no longer switch it on
+#   input.LowPassEnabled                  while a toggle targets it, knobs on LowPass no longer switch it on
+#   early_diffusion.DiffusionEnabled      flipping clears the early diffuser's buffers
+#   late_diffusion.LateDiffusionEnabled   flipping clears the late diffusers' buffers
+#   early_diffusion.DiffusionStages       off = 1 allpass stage, on = 2; flipping overwrites the stored value with 0.0/1.0
+#   late_diffusion.LateDiffusionStages    off = 1 allpass stage, on = 2; flipping overwrites the stored value with 0.0/1.0
+#   late_eq.LowShelfEnabled
+#   late_eq.HighShelfEnabled
+#   late_eq.CutoffEnabled
+#   late.LateStageTap
+#   late.Interpolation                    more CPU; may crackle at 5 lines
+# Not toggle targets: continuous parameters (a toggle would slam them to 0/1), LineCount (use delay_lines.max), reverse.delay (knob only), InputMix/CrossSeed (no effect in mono).
 #
 
 # --------------------------------------------------------------------------
@@ -98,6 +133,7 @@ blinks = 1
 led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
+default_delay_lines = 2.0
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
@@ -116,6 +152,18 @@ knob4_b = "late.LineModAmount"
 knob5_b = "late.LineModRate"
 knob6_b = "reverse.delay"
 
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.0
@@ -131,6 +179,7 @@ TapCount  = 0.36499997973442078
 TapLength = 1.0
 TapGain   = 1.0
 TapDecay  = 0.86500012874603271
+isReverse = 0.0
 
 # Early diffusion: allpass chain that smears the early reflections.
 [preset.params.early_diffusion]
@@ -185,9 +234,17 @@ PredelayOut = 0.0
 EarlyOut    = 0.77999997138977051
 MainOut     = 0.74500006437301636
 
-# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
 [preset.params.reverse]
-delay = 0.4771
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -196,6 +253,7 @@ blinks = 2
 led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
+default_delay_lines = 2.0
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
@@ -214,6 +272,18 @@ knob4_b = "late.LineModAmount"
 knob5_b = "late.LineModRate"
 knob6_b = "reverse.delay"
 
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.0
@@ -229,6 +299,7 @@ TapCount  = 0.36499997973442078
 TapLength = 1.0
 TapGain   = 0.83499991893768311
 TapDecay  = 0.86500012874603271
+isReverse = 0.0
 
 # Early diffusion: allpass chain that smears the early reflections.
 [preset.params.early_diffusion]
@@ -283,9 +354,17 @@ PredelayOut = 0.0
 EarlyOut    = 0.77999997138977051
 MainOut     = 0.74500006437301636
 
-# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
 [preset.params.reverse]
-delay = 0.4771
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -294,6 +373,7 @@ blinks = 3
 led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
+default_delay_lines = 2.0
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
@@ -312,6 +392,18 @@ knob4_b = "late.LineModAmount"
 knob5_b = "late.LineModRate"
 knob6_b = "reverse.delay"
 
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.1549999862909317
@@ -327,6 +419,7 @@ TapCount  = 0.41499990224838257
 TapLength = 0.43999996781349182
 TapGain   = 1.0
 TapDecay  = 1.0
+isReverse = 0.0
 
 # Early diffusion: allpass chain that smears the early reflections.
 [preset.params.early_diffusion]
@@ -381,9 +474,17 @@ PredelayOut = 0.0
 EarlyOut    = 0.8200000524520874
 MainOut     = 0.79500007629394531
 
-# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
 [preset.params.reverse]
-delay = 0.4771
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -392,6 +493,7 @@ blinks = 4
 led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
+default_delay_lines = 2.0
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
@@ -410,6 +512,18 @@ knob4_b = "late.LineModAmount"
 knob5_b = "late.LineModRate"
 knob6_b = "reverse.delay"
 
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.0
@@ -425,6 +539,7 @@ TapCount  = 0.51999980211257935
 TapLength = 0.26499992609024048
 TapGain   = 0.69499999284744263
 TapDecay  = 1.0
+isReverse = 0.0
 
 # Early diffusion: allpass chain that smears the early reflections.
 [preset.params.early_diffusion]
@@ -479,9 +594,17 @@ PredelayOut = 0.0
 EarlyOut    = 0.699999988079071
 MainOut     = 0.84499984979629517
 
-# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
 [preset.params.reverse]
-delay = 0.4771
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -490,6 +613,7 @@ blinks = 5
 led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
+default_delay_lines = 2.0
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
@@ -508,6 +632,18 @@ knob4_b = "late.LineModAmount"
 knob5_b = "late.LineModRate"
 knob6_b = "reverse.delay"
 
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.0
@@ -523,6 +659,7 @@ TapCount  = 1.0
 TapLength = 1.0
 TapGain   = 0.0
 TapDecay  = 0.830000102519989
+isReverse = 0.0
 
 # Early diffusion: allpass chain that smears the early reflections.
 [preset.params.early_diffusion]
@@ -577,9 +714,17 @@ PredelayOut = 0.0
 EarlyOut    = 0.64500010013580322
 MainOut     = 0.63000005483627319
 
-# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
 [preset.params.reverse]
-delay = 0.4771
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -588,6 +733,7 @@ blinks = 6
 led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
+default_delay_lines = 2.0
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
@@ -606,6 +752,18 @@ knob4_b = "late.LineModAmount"
 knob5_b = "late.LineModRate"
 knob6_b = "reverse.delay"
 
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.32499998807907104
@@ -621,6 +779,7 @@ TapCount  = 0.51999980211257935
 TapLength = 1.0
 TapGain   = 0.90000003576278687
 TapDecay  = 1.0
+isReverse = 0.0
 
 # Early diffusion: allpass chain that smears the early reflections.
 [preset.params.early_diffusion]
@@ -675,9 +834,17 @@ PredelayOut = 0.0
 EarlyOut    = 0.0
 MainOut     = 0.90999990701675415
 
-# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
 [preset.params.reverse]
-delay = 0.4771
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -686,6 +853,7 @@ blinks = 7
 led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
+default_delay_lines = 2.0
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
@@ -704,6 +872,18 @@ knob4_b = "late.LineModAmount"
 knob5_b = "late.LineModRate"
 knob6_b = "reverse.delay"
 
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.0
@@ -719,6 +899,7 @@ TapCount  = 0.41499990224838257
 TapLength = 0.43999996781349182
 TapGain   = 0.87999999523162842
 TapDecay  = 1.0
+isReverse = 0.0
 
 # Early diffusion: allpass chain that smears the early reflections.
 [preset.params.early_diffusion]
@@ -773,9 +954,17 @@ PredelayOut = 0.0
 EarlyOut    = 0.8599998950958252
 MainOut     = 0.90500003099441528
 
-# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
 [preset.params.reverse]
-delay = 0.4771
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -784,6 +973,7 @@ blinks = 8
 led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
+default_delay_lines = 2.0
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
@@ -802,6 +992,18 @@ knob4_b = "late.LineModAmount"
 knob5_b = "late.LineModRate"
 knob6_b = "reverse.delay"
 
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0
@@ -817,6 +1019,7 @@ TapCount  = 0
 TapLength = 1
 TapGain   = 0
 TapDecay  = 0.8650001287460327
+isReverse = 0.0
 
 # Early diffusion: allpass chain that smears the early reflections.
 [preset.params.early_diffusion]
@@ -871,9 +1074,17 @@ PredelayOut = 0
 EarlyOut    = 0.7250000238418579
 MainOut     = 0.6050001382827759
 
-# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
 [preset.params.reverse]
-delay = 0.4771
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -882,6 +1093,7 @@ blinks = 9
 led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
+default_delay_lines = 2.0
 max_delay_lines = 4.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
@@ -900,6 +1112,18 @@ knob4_b = "late.LineModAmount"
 knob5_b = "late.LineModRate"
 knob6_b = "reverse.delay"
 
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.0
@@ -915,6 +1139,7 @@ TapCount  = 1.0
 TapLength = 1.0
 TapGain   = 1.0
 TapDecay  = 0.71000003814697266
+isReverse = 0.0
 
 # Early diffusion: allpass chain that smears the early reflections.
 [preset.params.early_diffusion]
@@ -969,9 +1194,17 @@ PredelayOut = 0.0
 EarlyOut    = 0.0
 MainOut     = 0.95499974489212036
 
-# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
 [preset.params.reverse]
-delay = 0.4771
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -980,6 +1213,7 @@ blinks = 10
 led_on_ms = 150
 led_off_ms = 150
 led_pause_ms = 5000
+default_delay_lines = 2.0
 max_delay_lines = 5.0
 
 # Knob assignments. Primary (_a) is the knob's normal function; secondary (_b)
@@ -998,6 +1232,18 @@ knob4_b = "late.LineModAmount"
 knob5_b = "late.LineModRate"
 knob6_b = "reverse.delay"
 
+# Toggle assignments. Primary (_a) is the switch's normal function; secondary (_b)
+# is written by flipping the switch while the preset footswitch (FS2) is held down.
+[preset.toggle_map]
+toggle1_a = "delay_lines.max"
+toggle2_a = "early.isReverse"
+toggle3_a = "reverse.enabled"
+toggle4_a = "reverse.direct_mix"
+toggle1_b = "delay_lines.max"
+toggle2_b = "early.isReverse"
+toggle3_b = "reverse.enabled"
+toggle4_b = "reverse.direct_mix"
+
 # Input stage: pre-delay and the input filters feeding the whole reverb.
 [preset.params.input]
 InputMix       = 0.0
@@ -1013,6 +1259,7 @@ TapCount  = 0.1959999948740005
 TapLength = 0.9866999983787537
 TapGain   = 1.0
 TapDecay  = 1.0
+isReverse = 0.0
 
 # Early diffusion: allpass chain that smears the early reflections.
 [preset.params.early_diffusion]
@@ -1067,6 +1314,14 @@ PredelayOut = 0.0
 EarlyOut    = 0.0
 MainOut     = 0.95499974489212036
 
-# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+# Delay lines: stored state of the "delay_lines.max" toggle target
+# (off = this preset's default_delay_lines, on = its max_delay_lines).
+[preset.params.delay_lines]
+max = 0.0
+
+# Reverse voice: window length (knob target "reverse.delay") and the stored state of
+# the toggle targets "reverse.enabled" (voice on) and "reverse.direct_mix" (routing).
 [preset.params.reverse]
-delay = 0.4771
+delay      = 0.4771
+enabled    = 0.0
+direct_mix = 0.0

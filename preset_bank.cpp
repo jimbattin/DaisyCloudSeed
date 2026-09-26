@@ -21,14 +21,15 @@ constexpr int countOf(const T (&)[N])
     return (int)N;
 }
 
-// Signal-flow grouping of the 45 preset-controlled parameters. Must stay in sync
+// Signal-flow grouping of the 46 preset-controlled parameters. Must stay in sync
 // with the layout of presets.toml.
 const int kInputParams[] = {
     PARAM(InputMix), PARAM(PreDelay), PARAM(HiPassEnabled),
     PARAM(HighPass), PARAM(LowPassEnabled), PARAM(LowPass)};
 
 const int kEarlyParams[] = {
-    PARAM(TapCount), PARAM(TapLength), PARAM(TapGain), PARAM(TapDecay)};
+    PARAM(TapCount), PARAM(TapLength), PARAM(TapGain), PARAM(TapDecay),
+    PARAM(isReverse)};
 
 const int kEarlyDiffusionParams[] = {
     PARAM(DiffusionEnabled), PARAM(DiffusionStages), PARAM(DiffusionDelay),
@@ -78,10 +79,36 @@ const ParamGroup kGroups[] = {
 
 constexpr int kGroupCount = countOf(kGroups);
 
-// Driven live by SWITCH_1 (line count) and SWITCH_2 (bloom); never from a file.
+// Parameters a toggle may target: the engine reads each as two states (>= 0.5 on;
+// DiffusionStages / LateDiffusionStages give 1 vs 2 allpass stages, since
+// AllpassDiffuser::MaxStageCount == 2). Continuous parameters are rejected.
+const int kToggleParams[] = {
+    PARAM(isReverse), PARAM(HiPassEnabled), PARAM(LowPassEnabled),
+    PARAM(DiffusionEnabled), PARAM(DiffusionStages), PARAM(LateDiffusionEnabled),
+    PARAM(LateDiffusionStages), PARAM(LowShelfEnabled), PARAM(HighShelfEnabled),
+    PARAM(CutoffEnabled), PARAM(LateStageTap), PARAM(Interpolation)};
+
+bool isToggleParameter(int index)
+{
+    for (int i = 0; i < countOf(kToggleParams); i++)
+    {
+        if (kToggleParams[i] == index)
+            return true;
+    }
+    return false;
+}
+
+// Driven live by the "delay_lines.max" toggle target (default_delay_lines /
+// max_delay_lines); never from a file.
 bool isRuntimeParameter(int index)
 {
-    return index == PARAM(LineCount) || index == PARAM(isReverse);
+    return index == PARAM(LineCount);
+}
+
+// True when the first `groupLen` characters of `text` are exactly `name`.
+bool groupIs(const char* text, size_t groupLen, const char* name)
+{
+    return strlen(name) == groupLen && strncmp(text, name, groupLen) == 0;
 }
 
 int findParameter(const char* name)
@@ -125,6 +152,48 @@ bool readNumber(const toml_table_t* table, const char* key, double& out)
     }
 
     return false;
+}
+
+// Reads the required 0..1 value `group.key` of a pseudo group (no Parameter slot).
+bool readPseudoValue(const toml_table_t* table, const char* group,
+                     const char* key, int index, float& out, char* err,
+                     int errLen)
+{
+    double value = 0.0;
+    if (!readNumber(table, key, value))
+    {
+        snprintf(err, errLen, "preset %d: missing or non-numeric '%s.%s'", index,
+                 group, key);
+        return false;
+    }
+
+    // Rejects NaN too: reverseWindowMs() indexes ValueTables::Response3Oct
+    // with the raw reverse.delay value.
+    if (!(value >= 0.0 && value <= 1.0))
+    {
+        snprintf(err, errLen, "preset %d: '%s.%s' = %g out of range 0..1", index,
+                 group, key, value);
+        return false;
+    }
+    out = (float)value;
+    return true;
+}
+
+// A delay-line count: the engine truncates LineCount to an int, so a fraction is
+// a typo. The negated range test also rejects NaN.
+bool readLineCount(const toml_table_t* preset, const char* key, int index,
+                   float& out, char* err, int errLen)
+{
+    double lines = 0.0;
+    if (!readNumber(preset, key, lines) || !(lines >= 1.0 && lines <= 5.0)
+        || lines != (double)(int)lines)
+    {
+        snprintf(err, errLen, "preset %d: %s must be a whole number 1..5", index,
+                 key);
+        return false;
+    }
+    out = (float)lines;
+    return true;
 }
 
 // Rejects any key the schema does not define. Covers scalars, arrays and
@@ -189,16 +258,17 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
     }
 
     // Rejects unknown groups, and also a parameter or array written directly
-    // under [preset.params] instead of inside one of the groups. "reverse" is
-    // the ninth group; it holds no Parameter and is parsed separately below.
-    const char* allowedGroups[kGroupCount + 1];
+    // under [preset.params] instead of inside one of the groups. "reverse" and
+    // "delay_lines" hold no Parameter and are parsed separately below.
+    const char* allowedGroups[kGroupCount + 2];
     for (int g = 0; g < kGroupCount; g++)
         allowedGroups[g] = kGroups[g].name;
-    allowedGroups[kGroupCount] = "reverse";
+    allowedGroups[kGroupCount]     = "reverse";
+    allowedGroups[kGroupCount + 1] = "delay_lines";
 
-    char context[48];
+    char context[56];
     snprintf(context, sizeof context, "preset %d: [preset.params]: ", index);
-    if (!rejectUnknownKeys(params, allowedGroups, kGroupCount + 1, context, err,
+    if (!rejectUnknownKeys(params, allowedGroups, kGroupCount + 2, context, err,
                            errLen))
         return false;
 
@@ -302,8 +372,10 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
         }
     }
 
-    // [preset.params.reverse] delay: the reverse-window length (knob target
-    // "reverse.delay"). Not a Parameter, so it bypasses findParameter().
+    // [preset.params.reverse]: the reverse-window length (knob target
+    // "reverse.delay") and the stored state of the toggle targets
+    // "reverse.enabled" / "reverse.direct_mix". Not Parameters, so they bypass
+    // findParameter().
     const toml_table_t* reverse = toml_table_in(params, "reverse");
     if (!reverse)
     {
@@ -311,57 +383,127 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
         return false;
     }
 
-    static const char* const kReverseKeys[] = {"delay"};
+    static const char* const kReverseKeys[] = {"delay", "enabled", "direct_mix"};
     snprintf(context, sizeof context, "preset %d: [preset.params.reverse]: ",
              index);
-    if (!rejectUnknownKeys(reverse, kReverseKeys, 1, context, err, errLen))
+    if (!rejectUnknownKeys(reverse, kReverseKeys, countOf(kReverseKeys), context,
+                           err, errLen))
         return false;
 
-    double delay = 0.0;
-    if (!readNumber(reverse, "delay", delay))
+    if (!readPseudoValue(reverse, "reverse", "delay", index, out.reverseDelay, err,
+                         errLen)
+        || !readPseudoValue(reverse, "reverse", "enabled", index,
+                            out.reverseEnabled, err, errLen)
+        || !readPseudoValue(reverse, "reverse", "direct_mix", index,
+                            out.reverseDirectMix, err, errLen))
+        return false;
+
+    // [preset.params.delay_lines] max: stored state of the "delay_lines.max"
+    // toggle target.
+    const toml_table_t* delayLines = toml_table_in(params, "delay_lines");
+    if (!delayLines)
     {
-        snprintf(err, errLen, "preset %d: missing or non-numeric 'reverse.delay'",
+        snprintf(err, errLen, "preset %d: missing [preset.params.delay_lines]",
                  index);
         return false;
     }
 
-    // Rejects NaN too: reverseWindowMs() indexes ValueTables::Response3Oct
-    // with the raw value.
-    if (!(delay >= 0.0 && delay <= 1.0))
-    {
-        snprintf(err, errLen, "preset %d: 'reverse.delay' = %g out of range 0..1",
-                 index, delay);
+    static const char* const kDelayLinesKeys[] = {"max"};
+    snprintf(context, sizeof context, "preset %d: [preset.params.delay_lines]: ",
+             index);
+    if (!rejectUnknownKeys(delayLines, kDelayLinesKeys, countOf(kDelayLinesKeys),
+                           context, err, errLen))
         return false;
-    }
-    out.reverseDelay = (float)delay;
 
-    return true;
+    return readPseudoValue(delayLines, "delay_lines", "max", index,
+                           out.delayLinesMax, err, errLen);
 }
 
-const char* const kKnobKeys[kKnobBanks][kKnobCount] = {
+const char* const kKnobKeys[kControlBanks][kKnobCount] = {
     {"knob1_a", "knob2_a", "knob3_a", "knob4_a", "knob5_a", "knob6_a"},
     {"knob1_b", "knob2_b", "knob3_b", "knob4_b", "knob5_b", "knob6_b"}};
 
-// Resolves "group.Param" (or the literal "reverse.delay") into a KnobTarget.
-// `key` is the knobN_x key name, used only for error messages.
-bool parseKnobTarget(const char* text, const char* key, int index,
-                     KnobTarget& out, char* err, int errLen)
+const char* const kToggleKeys[kControlBanks][kToggleCount] = {
+    {"toggle1_a", "toggle2_a", "toggle3_a", "toggle4_a"},
+    {"toggle1_b", "toggle2_b", "toggle3_b", "toggle4_b"}};
+
+// Splits "group.name" at the dot. `map` ("knob_map" / "toggle_map") and `key`
+// (the knobN_x / toggleN_x key) are used only for error messages.
+bool splitTarget(const char* text, const char* map, const char* key, int index,
+                 size_t& groupLen, const char*& name, char* err, int errLen)
 {
     const char* dot = strchr(text, '.');
     if (!dot || dot == text || dot[1] == '\0')
     {
-        snprintf(err, errLen,
-                 "preset %d: knob_map: %s: '%s' must be \"group.Parameter\"",
-                 index, key, text);
+        snprintf(err, errLen, "preset %d: %s: %s: '%s' must be \"group.Parameter\"",
+                 index, map, key, text);
         return false;
     }
 
-    const size_t groupLen = (size_t)(dot - text);
-    const char*  param    = dot + 1;
+    groupLen = (size_t)(dot - text);
+    name     = dot + 1;
+    return true;
+}
 
-    if (groupLen == 7 && strncmp(text, "reverse", 7) == 0)
+// Resolves a "group.Parameter" target into a Parameter index, checking that the
+// parameter exists, is file-controlled, and belongs to that group.
+bool resolveParamTarget(const char* text, size_t groupLen, const char* name,
+                        const char* map, const char* key, int index,
+                        int& paramIndex, char* err, int errLen)
+{
+    int group = -1;
+    for (int g = 0; g < kGroupCount; g++)
     {
-        if (strcmp(param, "delay") != 0)
+        if (groupIs(text, groupLen, kGroups[g].name))
+        {
+            group = g;
+            break;
+        }
+    }
+    if (group < 0)
+    {
+        snprintf(err, errLen, "preset %d: %s: %s: unknown group in '%s'", index,
+                 map, key, text);
+        return false;
+    }
+
+    paramIndex = findParameter(name);
+    if (paramIndex < 0)
+    {
+        snprintf(err, errLen, "preset %d: %s: %s: unknown parameter '%s'", index,
+                 map, key, name);
+        return false;
+    }
+    if (isRuntimeParameter(paramIndex))
+    {
+        snprintf(err, errLen,
+                 "preset %d: %s: %s: '%s' is runtime-controlled and cannot be "
+                 "mapped",
+                 index, map, key, name);
+        return false;
+    }
+    if (groupOfParameter(paramIndex) != group)
+    {
+        snprintf(err, errLen, "preset %d: %s: %s: '%s' is not in group '%s'",
+                 index, map, key, name, kGroups[group].name);
+        return false;
+    }
+
+    return true;
+}
+
+// Resolves "group.Param" (or the literal "reverse.delay") into a KnobTarget.
+bool parseKnobTarget(const char* text, const char* key, int index,
+                     KnobTarget& out, char* err, int errLen)
+{
+    size_t      groupLen = 0;
+    const char* name     = nullptr;
+    if (!splitTarget(text, "knob_map", key, index, groupLen, name, err, errLen))
+        return false;
+
+    if (groupIs(text, groupLen, "reverse"))
+    {
+        if (strcmp(name, "delay") != 0)
         {
             snprintf(err, errLen,
                      "preset %d: knob_map: %s: 'reverse' has only 'delay'",
@@ -373,47 +515,72 @@ bool parseKnobTarget(const char* text, const char* key, int index,
         return true;
     }
 
-    int group = -1;
-    for (int g = 0; g < kGroupCount; g++)
-    {
-        if (strlen(kGroups[g].name) == groupLen
-            && strncmp(text, kGroups[g].name, groupLen) == 0)
-        {
-            group = g;
-            break;
-        }
-    }
-    if (group < 0)
-    {
-        snprintf(err, errLen, "preset %d: knob_map: %s: unknown group in '%s'",
-                 index, key, text);
+    int paramIndex = -1;
+    if (!resolveParamTarget(text, groupLen, name, "knob_map", key, index,
+                            paramIndex, err, errLen))
         return false;
-    }
-
-    const int paramIndex = findParameter(param);
-    if (paramIndex < 0)
-    {
-        snprintf(err, errLen, "preset %d: knob_map: %s: unknown parameter '%s'",
-                 index, key, param);
-        return false;
-    }
-    if (isRuntimeParameter(paramIndex))
-    {
-        snprintf(err, errLen,
-                 "preset %d: knob_map: %s: '%s' is runtime-controlled and "
-                 "cannot be mapped",
-                 index, key, param);
-        return false;
-    }
-    if (groupOfParameter(paramIndex) != group)
-    {
-        snprintf(err, errLen,
-                 "preset %d: knob_map: %s: '%s' is not in group '%s'", index,
-                 key, param, kGroups[group].name);
-        return false;
-    }
 
     out.kind       = KnobTarget_Param;
+    out.paramIndex = (uint8_t)paramIndex;
+    return true;
+}
+
+// Resolves "delay_lines.max", "reverse.enabled", "reverse.direct_mix" or an
+// on/off "group.Param" (kToggleParams) into a ToggleTarget.
+bool parseToggleTarget(const char* text, const char* key, int index,
+                       ToggleTarget& out, char* err, int errLen)
+{
+    size_t      groupLen = 0;
+    const char* name     = nullptr;
+    if (!splitTarget(text, "toggle_map", key, index, groupLen, name, err, errLen))
+        return false;
+
+    out.paramIndex = 0;
+
+    if (groupIs(text, groupLen, "delay_lines"))
+    {
+        if (strcmp(name, "max") != 0)
+        {
+            snprintf(err, errLen,
+                     "preset %d: toggle_map: %s: 'delay_lines' has only 'max'",
+                     index, key);
+            return false;
+        }
+        out.kind = ToggleTarget_DelayLinesMax;
+        return true;
+    }
+
+    if (groupIs(text, groupLen, "reverse"))
+    {
+        if (strcmp(name, "enabled") == 0)
+            out.kind = ToggleTarget_ReverseEnabled;
+        else if (strcmp(name, "direct_mix") == 0)
+            out.kind = ToggleTarget_ReverseDirectMix;
+        else
+        {
+            snprintf(err, errLen,
+                     "preset %d: toggle_map: %s: 'reverse' toggles only "
+                     "'enabled' or 'direct_mix'",
+                     index, key);
+            return false;
+        }
+        return true;
+    }
+
+    int paramIndex = -1;
+    if (!resolveParamTarget(text, groupLen, name, "toggle_map", key, index,
+                            paramIndex, err, errLen))
+        return false;
+
+    if (!isToggleParameter(paramIndex))
+    {
+        snprintf(err, errLen,
+                 "preset %d: toggle_map: %s: '%s' is not an on/off parameter",
+                 index, key, name);
+        return false;
+    }
+
+    out.kind       = ToggleTarget_Param;
     out.paramIndex = (uint8_t)paramIndex;
     return true;
 }
@@ -428,18 +595,18 @@ bool parseKnobMap(const toml_table_t* preset, int index, PresetData& out,
         return false;
     }
 
-    const char* allowed[kKnobBanks * kKnobCount];
-    for (int b = 0; b < kKnobBanks; b++)
+    const char* allowed[kControlBanks * kKnobCount];
+    for (int b = 0; b < kControlBanks; b++)
         for (int k = 0; k < kKnobCount; k++)
             allowed[b * kKnobCount + k] = kKnobKeys[b][k];
 
     char context[48];
     snprintf(context, sizeof context, "preset %d: [preset.knob_map]: ", index);
-    if (!rejectUnknownKeys(map, allowed, kKnobBanks * kKnobCount, context, err,
+    if (!rejectUnknownKeys(map, allowed, kControlBanks * kKnobCount, context, err,
                            errLen))
         return false;
 
-    for (int b = 0; b < kKnobBanks; b++)
+    for (int b = 0; b < kControlBanks; b++)
     {
         for (int k = 0; k < kKnobCount; k++)
         {
@@ -463,12 +630,58 @@ bool parseKnobMap(const toml_table_t* preset, int index, PresetData& out,
     return true;
 }
 
+bool parseToggleMap(const toml_table_t* preset, int index, PresetData& out,
+                    char* err, int errLen, void (*dealloc)(void*))
+{
+    const toml_table_t* map = toml_table_in(preset, "toggle_map");
+    if (!map)
+    {
+        snprintf(err, errLen, "preset %d: missing [preset.toggle_map]", index);
+        return false;
+    }
+
+    const char* allowed[kControlBanks * kToggleCount];
+    for (int b = 0; b < kControlBanks; b++)
+        for (int t = 0; t < kToggleCount; t++)
+            allowed[b * kToggleCount + t] = kToggleKeys[b][t];
+
+    char context[48];
+    snprintf(context, sizeof context, "preset %d: [preset.toggle_map]: ", index);
+    if (!rejectUnknownKeys(map, allowed, kControlBanks * kToggleCount, context,
+                           err, errLen))
+        return false;
+
+    for (int b = 0; b < kControlBanks; b++)
+    {
+        for (int t = 0; t < kToggleCount; t++)
+        {
+            toml_datum_t value = toml_string_in(map, kToggleKeys[b][t]);
+            if (!value.ok)
+            {
+                snprintf(err, errLen,
+                         "preset %d: toggle_map: missing or non-string '%s'",
+                         index, kToggleKeys[b][t]);
+                return false;
+            }
+
+            const bool ok = parseToggleTarget(value.u.s, kToggleKeys[b][t], index,
+                                              out.toggleMap[b][t], err, errLen);
+            dealloc(value.u.s);
+            if (!ok)
+                return false;
+        }
+    }
+
+    return true;
+}
+
 bool parsePreset(const toml_table_t* preset, int index, PresetData& out,
                  char* err, int errLen, void (*dealloc)(void*))
 {
     static const char* const kPresetKeys[] = {
         "name", "blinks", "led_on_ms", "led_off_ms", "led_pause_ms",
-        "max_delay_lines", "params", "knob_map"};
+        "default_delay_lines", "max_delay_lines", "params", "knob_map",
+        "toggle_map"};
 
     char context[32];
     snprintf(context, sizeof context, "preset %d: ", index);
@@ -515,23 +728,25 @@ bool parsePreset(const toml_table_t* preset, int index, PresetData& out,
                         err, errLen))
         return false;
 
-    double maxDelayLines = 0.0;
-    // The engine truncates LineCount to an int, so a fraction is a typo. The
-    // negated range test also rejects NaN.
-    if (!readNumber(preset, "max_delay_lines", maxDelayLines)
-        || !(maxDelayLines >= 1.0 && maxDelayLines <= 5.0)
-        || maxDelayLines != (double)(int)maxDelayLines)
+    if (!readLineCount(preset, "max_delay_lines", index, out.maxDelayLines, err,
+                       errLen)
+        || !readLineCount(preset, "default_delay_lines", index,
+                          out.defaultDelayLines, err, errLen))
+        return false;
+
+    // The toggle's off state must never exceed the preset's CPU cap.
+    if (out.defaultDelayLines > out.maxDelayLines)
     {
         snprintf(err, errLen,
-                 "preset %d: max_delay_lines must be a whole number 1..5", index);
+                 "preset %d: default_delay_lines exceeds max_delay_lines", index);
         return false;
     }
-    out.maxDelayLines = (float)maxDelayLines;
 
     if (!parseParams(preset, index, out, err, errLen))
         return false;
 
-    return parseKnobMap(preset, index, out, err, errLen, dealloc);
+    return parseKnobMap(preset, index, out, err, errLen, dealloc)
+           && parseToggleMap(preset, index, out, err, errLen, dealloc);
 }
 
 bool parseRoot(const toml_table_t* root, PresetBank& bank, char* err, int errLen,

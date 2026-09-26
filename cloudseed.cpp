@@ -17,6 +17,7 @@
 #include "CloudSeed/ReverseDelay.h"
 #include "preset_bank.h"
 #include "knob_bank.h"
+#include "toggle_bank.h"
 #include "footswitch_gestures.h"
 
 using namespace daisy;
@@ -62,11 +63,8 @@ constexpr uint32_t USER_PRESET_VALID        = 1u;  // erased flash reads 0xFFFFF
 constexpr int      CONFIRM_BLINKS   = 3;
 constexpr uint32_t CONFIRM_BLINK_MS = 80;  // on and off time
 
-// Terrarium controls. The values are indices into hw.switches[] (terrarium.h).
-constexpr int LINE_COUNT_SWITCH    = Terrarium::SWITCH_1;  // off = 2 lines, on = preset max
-constexpr int BLOOM_SWITCH         = Terrarium::SWITCH_2;  // reverse multitap gain order
-constexpr int REVERSE_ON_SWITCH    = Terrarium::SWITCH_3;  // reverse voice on/off
-constexpr int REVERSE_ROUTE_SWITCH = Terrarium::SWITCH_4;  // off = into reverb, on = direct mix
+// Terrarium footswitches. The values are indices into hw.switches[] (terrarium.h).
+// The four toggles are mapped per preset through [preset.toggle_map] (kToggleIndex).
 constexpr int BYPASS_FOOTSWITCH    = Terrarium::FOOTSWITCH_1;
 constexpr int PRESET_FOOTSWITCH    = Terrarium::FOOTSWITCH_2;
 
@@ -100,6 +98,7 @@ extern "C" {
 
 static PresetBank gPresets;
 static KnobBank gKnobs;
+static ToggleBank gToggles;
 static FootswitchGestures gFootswitches;
 
 // Persistent Settings
@@ -125,6 +124,9 @@ struct Settings {
 struct UserPreset {
     float    params[(int)::Parameter::Count];  // reverb->GetAllParameters() at save time
     float    reverseDelay;                     // state.reverseDelayNorm at save time
+    float    delayLinesMax;                    // state.delayLinesMax at save time, 0.0 or 1.0
+    float    reverseEnabled;                   // state.reverseEnabled at save time, 0.0 or 1.0
+    float    reverseDirectMix;                 // state.reverseDirectMix at save time, 0.0 or 1.0
     uint32_t valid;                            // USER_PRESET_VALID, else load from presets.toml
 };
 
@@ -152,13 +154,19 @@ struct PedalState {
     volatile bool triggerPresetRestore   = false;  // set by the callback on the FS1+FS2 5 s hold
     volatile bool saveSnapshotReady      = false;  // callback published gSaveSnapshot; main loop clears
     volatile bool presetChangeInProgress = false;  // main loop is loading a preset: pass through
-    volatile bool knobResetPending       = false;  // main loop changed the preset; re-snapshot knobs
+    volatile bool controlResetPending    = false;  // main loop changed the preset; re-snapshot knobs and toggles
     int currentPreset = 0;  // main loop only
 
     // Active preset configuration, written only while presetChangeInProgress (or
     // before audio starts) by loadPreset(). The audio callback and the blink state
     // machine read these, never gPresets.
-    KnobTarget   knobMap[kKnobBanks][kKnobCount] = {};
+    KnobTarget   knobMap[kControlBanks][kKnobCount] = {};
+    ToggleTarget toggleMap[kControlBanks][kToggleCount] = {};
+    // A toggle (either bank) targets HiPassEnabled / LowPassEnabled: knobs leave that
+    // enable alone.
+    bool         hiPassOwnedByToggle  = false;
+    bool         lowPassOwnedByToggle = false;
+    float        defaultDelayLines = 2.0f;  // lines while "delay_lines.max" is off
     float        maxDelayLines = 0.0f;
     BlinkPattern blinkPattern  = {};
     bool         outputLevelsDirty = true;  // DryOut/EarlyOut/MainOut changed
@@ -167,10 +175,13 @@ struct PedalState {
     int   prevReverseGrainSamples = 0;      // last window length written to reverseDelay
     float reverseDelayNorm        = 0.0f;   // set by loadPreset(); current value of the
                                             // "reverse.delay" target, which has no params[] slot
+    // Toggle pseudo-targets, set by loadPreset() and then by the levers.
+    bool  delayLinesMax           = false;  // "delay_lines.max": max_delay_lines, else default_delay_lines
+    bool  reverseEnabled          = false;  // "reverse.enabled": reverse voice on
+    bool  reverseDirectMix        = false;  // "reverse.direct_mix": on = direct mix, off = into reverb
 
     // Audio callback only.
     float prevNumDelayLines       = 0.0f;   // 0 forces the first callback to write LineCount
-    bool  prevBloom               = false;
     float reverseMix   = 0.0f;  // smoothed 0..1 crossfade for the reverse voice
     float samplesPerMs = 0.0f;  // sampleRate / 1000, precomputed for the reverse-time knob
     // Derived from DryOut/EarlyOut/MainOut; recomputed only when those change.
@@ -187,6 +198,10 @@ struct PedalState {
 static const int kKnobIndex[kKnobCount] = {
     Terrarium::KNOB_1, Terrarium::KNOB_2, Terrarium::KNOB_3,
     Terrarium::KNOB_4, Terrarium::KNOB_5, Terrarium::KNOB_6};
+
+// toggle1..toggle4 in presets.toml order -> hw.switches[] indices (terrarium.h)
+static const int kToggleIndex[kToggleCount] = {
+    Terrarium::SWITCH_1, Terrarium::SWITCH_2, Terrarium::SWITCH_3, Terrarium::SWITCH_4};
 
 // Declare a local daisy_petal for hardware access
 static DaisyPetal hw;
@@ -307,6 +322,16 @@ static void applyReverseWindow(float norm) {
     state.reverseDelayNorm = norm;
 }
 
+// True if any toggle in either bank of `p` targets `param`.
+static bool toggleMapTargets(const PresetData& p, ::Parameter param) {
+    for (int b = 0; b < kControlBanks; b++)
+        for (int t = 0; t < kToggleCount; t++)
+            if (p.toggleMap[b][t].kind == ToggleTarget_Param
+                && p.toggleMap[b][t].paramIndex == (int)param)
+                return true;
+    return false;
+}
+
 // Loads a preset: the user's saved edit if that slot holds one, else the factory
 // values from presets.toml.
 static void loadPreset(int presetIndex) {
@@ -322,23 +347,32 @@ static void loadPreset(int presetIndex) {
     reverb->ClearBuffers();
     reverb->LoadPreset(edited ? u.params : p.params);
     applyReverseWindow(edited ? u.reverseDelay : p.reverseDelay);
+    state.delayLinesMax    = (edited ? u.delayLinesMax : p.delayLinesMax) >= 0.5f;
+    state.reverseEnabled   = (edited ? u.reverseEnabled : p.reverseEnabled) >= 0.5f;
+    state.reverseDirectMix = (edited ? u.reverseDirectMix : p.reverseDirectMix) >= 0.5f;
 
     // Apply the preset's non-parameter configuration to pedal state. This is the
     // only place gPresets is read after boot; the audio callback uses the copies.
-    // None of it is user-editable, so it always comes from presets.toml.
+    // None of it is user-editable, so it always comes from presets.toml: the saved
+    // delayLinesMax flag only chooses between the two line counts.
     memcpy(state.knobMap, p.knobMap, sizeof state.knobMap);
-    state.maxDelayLines = p.maxDelayLines;
+    memcpy(state.toggleMap, p.toggleMap, sizeof state.toggleMap);
+    state.hiPassOwnedByToggle  = toggleMapTargets(p, ::Parameter::HiPassEnabled);
+    state.lowPassOwnedByToggle = toggleMapTargets(p, ::Parameter::LowPassEnabled);
+    state.defaultDelayLines = p.defaultDelayLines;
+    state.maxDelayLines     = p.maxDelayLines;
     state.blinkPattern  = BlinkPattern{p.blinks, p.onDurationMs, p.offDurationMs,
                                        p.pauseAfterMs};
     state.outputLevelsDirty = true;
 }
 
-// Main loop only. Loads `index` behind the presetChangeInProgress gate; parks the knobs first.
+// Main loop only. Loads `index` behind the presetChangeInProgress gate; parks the
+// knobs and toggles first.
 static void loadPresetGated(int index) {
     state.presetChangeInProgress = true;
-    // Park the knobs before the load so no callback during it can push a stale
-    // position into the incoming preset.
-    state.knobResetPending       = true;
+    // Park the knobs and toggles before the load so no callback during it can push a
+    // stale position into the incoming preset.
+    state.controlResetPending    = true;
     std::atomic_signal_fence(std::memory_order_seq_cst);  // gate closed before any preset write
     state.currentPreset = index;
     loadPreset(index);
@@ -415,13 +449,16 @@ static void applyKnobTarget(const KnobTarget& target, float value) {
     switch (param) {
     // The two input filters are switch-gated and off in most presets, so a knob
     // mapped to one of them would otherwise be silent. Enabling on first touch
-    // leaves an untouched preset exactly as authored.
+    // leaves an untouched preset exactly as authored. A toggle that targets the
+    // enable owns it, so the knob then only moves the cutoff.
     case ::Parameter::HighPass:
-        if (reverb->GetAllParameters()[(int)::Parameter::HiPassEnabled] < 0.5f)
+        if (!state.hiPassOwnedByToggle
+            && reverb->GetAllParameters()[(int)::Parameter::HiPassEnabled] < 0.5f)
             reverb->SetParameter(::Parameter::HiPassEnabled, 1.0f);
         break;
     case ::Parameter::LowPass:
-        if (reverb->GetAllParameters()[(int)::Parameter::LowPassEnabled] < 0.5f)
+        if (!state.lowPassOwnedByToggle
+            && reverb->GetAllParameters()[(int)::Parameter::LowPassEnabled] < 0.5f)
             reverb->SetParameter(::Parameter::LowPassEnabled, 1.0f);
         break;
     // These three are the only inputs to makeupGain / scaledDryOut.
@@ -435,6 +472,25 @@ static void applyKnobTarget(const KnobTarget& target, float value) {
     }
 }
 
+// Writes one lever position (up = on) to its mapped destination. No toggle target
+// feeds the makeup gain, so outputLevelsDirty is left alone.
+static void applyToggleTarget(const ToggleTarget& target, bool on) {
+    switch (target.kind) {
+    case ToggleTarget_DelayLinesMax:
+        state.delayLinesMax = on;
+        break;
+    case ToggleTarget_ReverseEnabled:
+        state.reverseEnabled = on;
+        break;
+    case ToggleTarget_ReverseDirectMix:
+        state.reverseDirectMix = on;
+        break;
+    case ToggleTarget_Param:
+        reverb->SetParameter((::Parameter)target.paramIndex, on ? 1.0f : 0.0f);
+        break;
+    }
+}
+
 // Current value of whatever a knob is mapped to, in knob (0..1) space. SetParameter
 // stores knob values verbatim in parameters[] (CloudSeed/ReverbController.h:170), so
 // this is directly comparable to a raw knob position.
@@ -444,14 +500,15 @@ static float knobTargetValue(const KnobTarget& target) {
     const float* params = reverb->GetAllParameters();
     // A disabled input filter is heard as fully open, and applyKnobTarget() enables
     // it on the first write, so the takeover glide must start from the open end, not
-    // from the stored cutoff.
+    // from the stored cutoff. When a toggle owns the enable the knob does not touch
+    // it, so the glide starts from the stored cutoff.
     switch ((::Parameter)target.paramIndex) {
     case ::Parameter::HighPass:
-        if (params[(int)::Parameter::HiPassEnabled] < 0.5f)
+        if (!state.hiPassOwnedByToggle && params[(int)::Parameter::HiPassEnabled] < 0.5f)
             return 0.0f;
         break;
     case ::Parameter::LowPass:
-        if (params[(int)::Parameter::LowPassEnabled] < 0.5f)
+        if (!state.lowPassOwnedByToggle && params[(int)::Parameter::LowPassEnabled] < 0.5f)
             return 1.0f;
         break;
     default:
@@ -591,10 +648,12 @@ static void processFootswitches() {
 }
 
 // Every reverb write lives here, and the caller skips it while the main loop is
-// loading a preset: it is rewriting state.knobMap and all 47 engine parameters at the
-// same time. The knob re-park is gated for the same reason (it must not straddle a
-// knobMap rewrite); knobResetPending simply stays set until the load completes.
-static void updateEngineControls(int bank, const float* knobPositions) {
+// loading a preset: it is rewriting state.knobMap / state.toggleMap and all 47 engine
+// parameters at the same time. The knob and toggle re-park is gated for the same
+// reason (it must not straddle a map rewrite); controlResetPending simply stays set
+// until the load completes.
+static void updateEngineControls(int bank, const float* knobPositions,
+                                 const bool* togglePositions) {
     // Any bank or preset transition re-parks every knob (knob_bank.h): a knob
     // writes nothing until it is turned, then glides its target to the pot's
     // position over kKnobGlideBlocks blocks and tracks it from there.
@@ -602,33 +661,35 @@ static void updateEngineControls(int bank, const float* knobPositions) {
     for (int i = 0; i < kKnobCount; i++)
         knobCurrent[i] = knobTargetValue(state.knobMap[bank][i]);
 
+    const bool reset = state.controlResetPending;
     KnobWrite knobWrites[kKnobCount];
     const int knobWriteCount = gKnobs.Scan(
-        bank, state.knobResetPending, knobPositions, knobCurrent, knobWrites);
-    state.knobResetPending = false;
+        bank, reset, knobPositions, knobCurrent, knobWrites);
     for (int w = 0; w < knobWriteCount; w++)
         applyKnobTarget(state.knobMap[bank][knobWrites[w].knob], knobWrites[w].value);
 
-    // A secondary knob that wrote during this hold turns the FS2 release into a
-    // no-op. Entering bank 1 re-parks (zero writes), so the press itself never counts.
-    if (bank == 1 && knobWriteCount > 0)
+    // Toggles are parked the same way (toggle_bank.h): a lever writes its position
+    // only once it is flipped after a transition.
+    ToggleWrite toggleWrites[kToggleCount];
+    const int toggleWriteCount = gToggles.Scan(bank, reset, togglePositions, toggleWrites);
+    state.controlResetPending = false;
+    for (int w = 0; w < toggleWriteCount; w++)
+        applyToggleTarget(state.toggleMap[bank][toggleWrites[w].toggle], toggleWrites[w].on);
+
+    // A secondary knob or toggle that wrote during this hold turns the FS2 release
+    // into a no-op. Entering bank 1 re-parks (zero writes), so the press itself never
+    // counts.
+    if (bank == 1 && knobWriteCount + toggleWriteCount > 0)
         gFootswitches.MarkEdited();
 
-    // SWITCH_1: off = 2 delay lines, on = the preset's max. Both candidates are exact
-    // copies, so != is an exact change test.
-    const float numDelayLines = hw.switches[LINE_COUNT_SWITCH].Pressed()
-        ? state.maxDelayLines
-        : 2.0f;
+    // "delay_lines.max": off = the preset's default_delay_lines, on = its
+    // max_delay_lines. Both are exact copies, so != is an exact change test. The
+    // toggle writes above run first, so a flip lands in the same block.
+    const float numDelayLines = state.delayLinesMax ? state.maxDelayLines
+                                                    : state.defaultDelayLines;
     if (numDelayLines != state.prevNumDelayLines) {
         reverb->SetParameter(::Parameter::LineCount, numDelayLines);
         state.prevNumDelayLines = numDelayLines;
-    }
-
-    // SWITCH_2: Bloom (reverse multitap gain order)
-    const bool bloom = hw.switches[BLOOM_SWITCH].Pressed();
-    if (bloom != state.prevBloom) {
-        reverb->SetParameter(::Parameter::isReverse, bloom ? 1.0f : 0.0f);
-        state.prevBloom = bloom;
     }
 }
 
@@ -651,7 +712,7 @@ static void refreshOutputLevels() {
     state.outputLevelsDirty = false;
 }
 
-// SWITCH_4 off: reverse the dry guitar and inject it into the reverb input.
+// "reverse.direct_mix" off: reverse the dry guitar and inject it into the reverb input.
 // The reverb re-emits dryOut*(dry+injectedReverse); we subtract
 // dryOut*injectedReverse at the output so the dry pass-through stays the
 // clean, non-reversed guitar and the reverse is heard only through the wet
@@ -675,7 +736,7 @@ static void renderReverseIntoReverb(float reverseTarget, float* out) {
         out[i] = (gWetBuffer[i] - dry * gReverseBuffer[i]) * gain;
 }
 
-// SWITCH_4 on: the reverse records the reverb output and its reversed copy is mixed
+// "reverse.direct_mix" on: the reverse records the reverb output and its reversed copy is mixed
 // straight into the output (reverse audible on its own).
 static void renderReverseDirect(float reverseTarget, float* out) {
     reverb->Process(gInputBuffer, gWetBuffer, AUDIO_BUFFER_SIZE);
@@ -710,14 +771,21 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     float knobPositions[kKnobCount];
     for (int i = 0; i < kKnobCount; i++)
         knobPositions[i] = hw.knob[kKnobIndex[i]].Value();
+    bool togglePositions[kToggleCount];
+    for (int i = 0; i < kToggleCount; i++)
+        togglePositions[i] = hw.switches[kToggleIndex[i]].Pressed();
     // Holding the preset footswitch selects bank 1 until its release edge.
-    updateEngineControls(gFootswitches.PresetHeld() ? 1 : 0, knobPositions);
+    updateEngineControls(gFootswitches.PresetHeld() ? 1 : 0, knobPositions,
+                         togglePositions);
 
     // FS1 save hold: snapshot here, where the gate is open, so a half-loaded preset
-    // is never captured. LineCount/isReverse come along; LoadPreset() skips both.
+    // is never captured. LineCount comes along; LoadPreset() skips it.
     if (gSaveRequested && !state.saveSnapshotReady) {
         memcpy(gSaveSnapshot.params, reverb->GetAllParameters(), sizeof gSaveSnapshot.params);
-        gSaveSnapshot.reverseDelay = state.reverseDelayNorm;
+        gSaveSnapshot.reverseDelay     = state.reverseDelayNorm;
+        gSaveSnapshot.delayLinesMax    = state.delayLinesMax ? 1.0f : 0.0f;
+        gSaveSnapshot.reverseEnabled   = state.reverseEnabled ? 1.0f : 0.0f;
+        gSaveSnapshot.reverseDirectMix = state.reverseDirectMix ? 1.0f : 0.0f;
         gSaveSnapshot.valid        = USER_PRESET_VALID;
         gSaveRequested             = false;
         std::atomic_signal_fence(std::memory_order_seq_cst);  // snapshot written before publishing
@@ -725,12 +793,12 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     }
     refreshOutputLevels();
 
-    // SWITCH_3: reverse voice on/off. The reverse window length is a knob_map
-    // target ("reverse.delay"), not a SWITCH_3 overload of KNOB_4.
-    const float reverseTarget = hw.switches[REVERSE_ON_SWITCH].Pressed() ? 1.0f : 0.0f;
+    // "reverse.enabled": reverse voice on/off; "reverse.direct_mix" picks the routing.
+    // Both are toggle targets, set by loadPreset() and the levers.
+    const float reverseTarget = state.reverseEnabled ? 1.0f : 0.0f;
     memcpy(gInputBuffer, in[0], AUDIO_BUFFER_SIZE * sizeof(float));  // left channel
     // The reverb runs even when bypassed: that suppresses an audible 1 kHz whine.
-    if (hw.switches[REVERSE_ROUTE_SWITCH].Pressed())
+    if (state.reverseDirectMix)
         renderReverseDirect(reverseTarget, out[0]);
     else
         renderReverseIntoReverb(reverseTarget, out[0]);
