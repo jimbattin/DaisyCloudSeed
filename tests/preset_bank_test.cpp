@@ -102,6 +102,14 @@ static const Reject kRejects[] = {
     {"isReverse = 0.0\n", "", 1, "missing parameter 'isReverse'"},
     {"knob1_a = \"output.DryOut\"", "knob1_a = \"reverse.enabled\"", 1,
      "'reverse' has only 'delay'"},
+    {"led_on_ms = 150", "led_on_ms = 150.5", 1,
+     "preset 0: led_on_ms must be a whole number 0..60000"},
+    {"led_on_ms = 150", "led_on_ms = \"150\"", 1,
+     "preset 0: led_on_ms must be a whole number 0..60000"},
+    {"led_pause_ms = 5000", "led_pause_ms = 60001", 1,
+     "preset 0: led_pause_ms must be a whole number 0..60000"},
+    {"name = \"Chorus\"", "name = \"0123456789012345678901234567890X\"", 1,
+     "preset 0: name longer than 31 bytes"},
 };
 
 struct Accept {
@@ -146,6 +154,23 @@ int main(int argc, char** argv) {
         CHECK(ok);
         if (!ok)
             fprintf(stderr, "  unexpected rejection: '%s'\n", err.c_str());
+    }
+
+    // A float LED timing is honoured, not silently replaced by the default.
+    {
+        std::string t = base;
+        CHECK(Mutate(t, "led_on_ms = 150", "led_on_ms = 300.0"));
+        CHECK(Parse(t, gBank, err));
+        CHECK(gBank.presets[0].onDurationMs == 300);
+    }
+
+    // The longest name that fits is kept whole.
+    {
+        const char* longest = "0123456789012345678901234567890";
+        std::string t = base;
+        CHECK(Mutate(t, "name = \"Chorus\"", "name = \"0123456789012345678901234567890\""));
+        CHECK(Parse(t, gBank, err));
+        CHECK(strcmp(gBank.presets[0].name, longest) == 0);
     }
 
     return CheckSummary("preset_bank_test");

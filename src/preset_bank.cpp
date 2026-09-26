@@ -181,16 +181,25 @@ bool readPseudoValue(const toml_table_t* table, const char* group,
     return true;
 }
 
+// A whole number lo..hi, written as either `5` or `5.0`. False if the key is
+// missing, non-numeric, fractional or out of range; the negated range test also
+// rejects NaN.
+bool readWholeNumber(const toml_table_t* table, const char* key, double lo,
+                     double hi, double& out)
+{
+    return readNumber(table, key, out)
+           && out >= lo && out <= hi
+           && out == (double)(long long)out;
+}
+
 // A delay-line count: a whole number 1..CloudSeed::TotalLineCount, the number of
 // lines the engine builds. The engine truncates LineCount to an int, so a fraction
-// is a typo. The negated range test also rejects NaN.
+// is a typo.
 bool readLineCount(const toml_table_t* preset, const char* key, int index,
                    float& out, char* err, int errLen)
 {
     double lines = 0.0;
-    if (!readNumber(preset, key, lines)
-        || !(lines >= 1.0 && lines <= CloudSeed::TotalLineCount)
-        || lines != (double)(int)lines)
+    if (!readWholeNumber(preset, key, 1.0, CloudSeed::TotalLineCount, lines))
     {
         snprintf(err, errLen, "preset %d: %s must be a whole number 1..%d", index,
                  key, CloudSeed::TotalLineCount);
@@ -231,23 +240,26 @@ bool rejectUnknownKeys(const toml_table_t* table, const char* const* allowed,
     return true;
 }
 
+// An optional LED timing: an absent key means `defaultValue`, a present one must
+// be a whole number of milliseconds 0..60000.
 bool readOptionalMs(const toml_table_t* table, const char* key, int index,
                     uint32_t defaultValue, uint32_t& out, char* err, int errLen)
 {
-    toml_datum_t value = toml_int_in(table, key);
-    if (!value.ok)
+    if (!toml_key_exists(table, key))
     {
         out = defaultValue;
         return true;
     }
 
-    if (value.u.i < 0 || value.u.i > 60000)
+    double ms = 0.0;
+    if (!readWholeNumber(table, key, 0.0, 60000.0, ms))
     {
-        snprintf(err, errLen, "preset %d: %s out of range 0..60000", index, key);
+        snprintf(err, errLen, "preset %d: %s must be a whole number 0..60000", index,
+                 key);
         return false;
     }
 
-    out = (uint32_t)value.u.i;
+    out = (uint32_t)ms;
     return true;
 }
 
@@ -700,17 +712,21 @@ bool parsePreset(const toml_table_t* preset, int index, PresetData& out,
         return false;
     }
 
-    const bool emptyName = name.u.s[0] == '\0';
-    if (!emptyName)
-    {
-        strncpy(out.name, name.u.s, kMaxPresetNameLen - 1);
-        out.name[kMaxPresetNameLen - 1] = '\0';
-    }
+    // Measure and copy before freeing the parser's string, then validate.
+    const size_t nameLen = strlen(name.u.s);
+    if (nameLen < (size_t)kMaxPresetNameLen)
+        memcpy(out.name, name.u.s, nameLen + 1);
     dealloc(name.u.s);
 
-    if (emptyName)
+    if (nameLen == 0)
     {
         snprintf(err, errLen, "preset %d: empty name", index);
+        return false;
+    }
+    if (nameLen >= (size_t)kMaxPresetNameLen)
+    {
+        snprintf(err, errLen, "preset %d: name longer than %d bytes", index,
+                 kMaxPresetNameLen - 1);
         return false;
     }
 

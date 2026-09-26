@@ -41,6 +41,14 @@ namespace CloudSeed
 			, lowPass(samplerate)
 		{
 			this->bufferSize = bufferSize;
+			// A defined starting state: the lines live in the SDRAM pool, which is never
+			// zeroed, and SetParameter(LateDiffusionEnabled) compares against the old
+			// DiffuserEnabled before the preset sets it.
+			DiffuserEnabled = false;
+			LowShelfEnabled = false;
+			HighShelfEnabled = false;
+			CutoffEnabled = false;
+			LateStageTap = false;
 			tempBuffer = new float[bufferSize];
 			mixedBuffer = new float[bufferSize];
 			filterOutputBuffer = new float[bufferSize];

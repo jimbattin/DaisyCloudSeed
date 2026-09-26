@@ -186,7 +186,7 @@ goes live once it moves `kKnobMoveThreshold` (0.01 of travel) from its snapshot.
 moving) position over `kKnobGlideBlocks` (50) audio blocks = 50 ms, landing exactly on the pot.
 The glide exists because engine parameters are not smoothed downstream
 (`ReverbChannel::SetParameter` assigns the output levels directly,
-`CloudSeed/ReverbChannel.h:310-321`), so a step would click. After the glide the knob writes its
+`CloudSeed/ReverbChannel.h:319-330`), so a step would click. After the glide the knob writes its
 own position whenever that changes by `kKnobApplyEpsilon` (0.001), which keeps ADC noise off the
 engine.
 
@@ -333,7 +333,7 @@ All presets allow 5 delay lines except "Through the Looking Glass"
 
 **Boot-time memory**: the parser allocates exclusively from a 512 KB bump arena carved from the
 head of `custom_pool` (`src/sdram_pool.cpp:48-57`), used between `hw.Init()` and
-`new CloudSeed::ReverbController(...)`. Peak measured usage is 142,968 B on x86-64 (smaller on
+`new CloudSeed::ReverbController(...)`. Peak measured usage is 142,912 B on x86-64 (smaller on
 32-bit ARM); the arena is abandoned - not freed - so the SDRAM pool starts at offset 0 for the
 reverb. Permanent SDRAM cost of the TOML system: zero.
 
@@ -542,7 +542,7 @@ allocating - the two uses never overlap in time.
 **ReverbChannel** ([CloudSeed/ReverbChannel.h](CloudSeed/ReverbChannel.h)):
 - Builds `TotalLineCount` (5) delay lines for the mono implementation
   ([CloudSeed/DelayLineCount.h](CloudSeed/DelayLineCount.h)); `SetParameter(LineCount)` clamps the
-  active count to 1..`TotalLineCount` (`CloudSeed/ReverbChannel.h:205-215`)
+  active count to 1..`TotalLineCount` (`CloudSeed/ReverbChannel.h:214-224`)
 - Contains delay lines, diffusers, modulation
 
 **DelayLine** ([CloudSeed/DelayLine.h](CloudSeed/DelayLine.h)):
@@ -550,7 +550,7 @@ allocating - the two uses never overlap in time.
 - The delay buffer itself is SDRAM-pool-backed (placement-new into `custom_pool_allocate`,
   `CloudSeed/ModulatedDelay.h:41-42`)
 - `tempBuffer`, `mixedBuffer`, and `filterOutputBuffer` are real heap allocations
-  (`CloudSeed/DelayLine.h:44-46`, freed at `:66-68`)
+  (`CloudSeed/DelayLine.h:52-54`, freed at `:74-76`)
 
 **AllpassDiffuser, MultitapDiffuser**: Diffusion stages
 **ModulatedAllpass, ModulatedDelay**: Modulated processing
@@ -606,7 +606,7 @@ scalars (a parameter value that is non-finite or outside 0..1; `max_delay_lines`
 (unknown group/parameter, wrong group, a runtime parameter, or - for toggles - a parameter not
 in `kToggleParams`), and a document too large for the boot parse arena - the host tool allocates
 through a replica of `TOML_ARENA_SIZE` (512 KB, 8-byte aligned, no reuse), so `presets.toml: 10
-presets valid, boot arena peak 142968 of 524288 bytes` is the same peak the pedal sees. Host
+presets valid, boot arena peak 142912 of 524288 bytes` is the same peak the pedal sees. Host
 pointers are 64-bit, so the reported peak over-estimates the 32-bit target: a pass here implies
 a fit on hardware. A near-miss should be fixed by raising `TOML_ARENA_SIZE` (`src/sdram_pool.cpp:48`),
 not by loosening the host check.
@@ -870,11 +870,11 @@ ever flashed it would stop boot and blink both LEDs):
 - `blinks` is 1..20; `default_delay_lines` and `max_delay_lines` are each a whole number
   1..`TotalLineCount` (5; a fraction or `nan` fails with `preset N: <key> must be a whole number 1..5`), and
   `default_delay_lines` must not exceed `max_delay_lines`
-  (`preset N: default_delay_lines exceeds max_delay_lines`); the ms fields are optional
-  integers 0..60000 (defaults 150/150/5000; `readOptionalMs()` reads them with `toml_int_in`, so
-  a float such as `300.0` is silently ignored and the default used); `name` must be non-empty
-  and only its first 31 characters are kept (`kMaxPresetNameLen`); at most `kMaxPresets` (16)
-  presets
+  (`preset N: default_delay_lines exceeds max_delay_lines`); the ms fields are optional whole
+  numbers 0..60000, written `300` or `300.0` (defaults 150/150/5000 when absent; a fraction, a
+  string or an out-of-range value fails with `preset N: <key> must be a whole number 0..60000`);
+  `name` must be non-empty and at most 31 bytes (`kMaxPresetNameLen` - 1; longer fails with
+  `preset N: name longer than 31 bytes`); at most `kMaxPresets` (16) presets
 - Every parameter value must be finite and within 0.0-1.0 (`preset N: 'Name' = V out of range
   0..1`): `AudioLib::ValueTables::Get` indexes its tables with the raw value, so anything else
   would read out of bounds on the pedal. The real-unit ranges are listed in the TOML header and
@@ -904,10 +904,10 @@ constexpr int TotalLineCount = 5;  // CloudSeed/DelayLineCount.h:14
 `TotalLineCount` is the single definition of how many `DelayLine`s `ReverbChannel` builds, and
 everything that depends on it follows automatically:
 - `ReverbChannel::SetParameter(LineCount)` clamps the active count to 1..`TotalLineCount`
-  (`CloudSeed/ReverbChannel.h:205-215`), so no caller can make `Process` loop past the lines that
-  exist (`:394`, `:397`). The lower bound matters too: `ReverbController::LoadPreset()` re-applies
+  (`CloudSeed/ReverbChannel.h:214-224`), so no caller can make `Process` loop past the lines that
+  exist (`:403`, `:406`). The lower bound matters too: `ReverbController::LoadPreset()` re-applies
   the stored `LineCount`, which is 0 at boot until the audio callback sets the real count
-- `readLineCount()` (`src/preset_bank.cpp:187-201`) validates `default_delay_lines` /
+- `readLineCount()` (`src/preset_bank.cpp:195-210`) validates `default_delay_lines` /
   `max_delay_lines` against it, so `make` rejects a preset asking for more lines than exist,
   naming the preset and key: `preset N: max_delay_lines must be a whole number 1..<TotalLineCount>`.
   The `preset_check` and `preset_bank_test` rules list the header as a prerequisite, so they are
@@ -1272,11 +1272,11 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
   and abandoned before the reverb allocates
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
   (`libdaisy/core/STM32H750IB_sram.lds:244-251`), which is where `DelayLine`'s `tempBuffer`,
-  `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:44-46`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 206,492 B of 480KB (42.01%). Of that, the
-  embedded `presets.toml` blob is 48,912 B (`build/presets_toml.o` - it carries the
+  `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:52-54`) land
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 206,860 B of 480KB (42.09%). Of that, the
+  embedded `presets.toml` blob is 48,860 B (`build/presets_toml.o` - it carries the
   per-preset `[preset.knob_map]`, `[preset.toggle_map]`, `[preset.params.reverse]` and
-  `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 7,791 B
+  `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 8,081 B
 - DTCMRAM: 27,988 B of 128KB (21.35%) — includes the 4,804 B `gPresets` bank (40 B of that per
   preset slot is the knob + toggle maps: 24 B knobs, 16 B toggles), the 6,676 B
   `gStorage` user-preset store (`PersistentStorage` keeps a defaults copy and a live copy of the 3,332 B
@@ -1424,7 +1424,7 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 ### Key Concepts
 - Buffer size: 48 samples
 - Sample rate: 48kHz (typical)
-- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena; peak 142,968 B)
+- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena; peak 142,912 B)
 - Delay lines: 5 (mono Terrarium), toggled per preset between `default_delay_lines` and
   `max_delay_lines` in presets.toml (default SWITCH_1, `[preset.toggle_map]`)
 - Presets: 10, defined in presets.toml, `gPresets.count` at runtime (max `kMaxPresets` = 16)

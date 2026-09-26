@@ -10,12 +10,12 @@ lived at, and the fix applied. No control mapping, preset, or audio topology cha
 **Files**: `src/cloudseed.cpp`
 
 Reverb feedback paths decay exponentially toward zero every tail: `DelayLine::Process`'s
-feedback multiply (`CloudSeed/DelayLine.h:191`), `ModulatedAllpass::Process*`'s feedback
+feedback multiply (`CloudSeed/DelayLine.h:199`), `ModulatedAllpass::Process*`'s feedback
 (`CloudSeed/ModulatedAllpass.h:90,128`), and `Biquad::Process`'s IIR state
 (`CloudSeed/AudioLib/Biquad.h:57-61`). Once a value enters the subnormal range (~1e-38),
 the Cortex-M7 FPU takes a multi-cycle microcoded slow path per operation instead of
 single-cycle. The codebase already had three independent, incomplete, ad-hoc manual
-guards for this (`ReverbChannel.h:366-373`, `AudioLib/Hp1.h:63-66`, `AudioLib/Lp1.h:59-62`)
+guards for this (`ReverbChannel.h:375-382`, `AudioLib/Hp1.h:63-66`, `AudioLib/Lp1.h:59-62`)
 that don't cover the delay-line/allpass feedback state where the problem originates.
 
 **Fix**: set the FPU's Flush-to-Zero bit (FPSCR bit 24) once at boot, in `main()` before

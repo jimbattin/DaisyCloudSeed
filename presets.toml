@@ -12,10 +12,10 @@
 #   * Preset order is the order below. The index is stored in QSPI flash, so
 #     reordering or deleting presets invalidates saved settings (bump
 #     SETTINGS_VERSION in src/pedal_storage.cpp in the same change).
-#   * 1 to 16 [[preset]] tables. Each needs a non-empty name (only the first 31
-#     characters are kept) and blinks = 1..20. led_on_ms, led_off_ms and
-#     led_pause_ms are optional integers 0..60000 (defaults 150 / 150 / 5000); a
-#     non-integer such as 300.0 is ignored and the default is used.
+#   * 1 to 16 [[preset]] tables. Each needs a non-empty name of at most 31
+#     bytes and blinks = 1..20. led_on_ms, led_off_ms and led_pause_ms are
+#     optional whole numbers 0..60000 (300 and 300.0 both work; defaults
+#     150 / 150 / 5000).
 #   * Every parameter value must be a number within 0.0-1.0; anything else,
 #     nan included, is rejected.
 #   * Every [preset.params.*] group must contain exactly the keys listed for it;

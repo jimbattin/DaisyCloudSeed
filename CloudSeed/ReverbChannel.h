@@ -83,6 +83,15 @@ namespace CloudSeed
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 				this->parameters[value] = 0.0f;
 
+			// A defined starting state. LoadPreset() sets every one of these, but reads
+			// some first: SetParameter(DiffusionEnabled) compares against the old value,
+			// and UpdateLines() reads delayLineSeed when LineDelay is applied, before
+			// DelaySeed. The ReverbController is heap-allocated, so nothing is zeroed.
+			diffuserEnabled = false;
+			highPassEnabled = false;
+			lowPassEnabled = false;
+			delayLineSeed = 0;
+			postDiffusionSeed = 0;
 			crossSeed = 0.0;
 			lineCount = TotalLineCount;
 			perLineGain = 1.0f / std::sqrt((float)lineCount);
