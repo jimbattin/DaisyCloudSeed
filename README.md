@@ -140,13 +140,38 @@ validation checklist is [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md).
 
 [editor/](editor/) is a local web app, styled after the Lexicon 480L LARC, that edits every
 field of a preset bank and talks to the pedal over Web MIDI. It runs in current Chrome and
-Firefox and needs Node 22.12 or newer:
+Firefox. Building it does not involve the firmware toolchain; it needs Node 22.12 or newer
+(`npm install` refuses older versions).
+
+Run it from source (development server):
 ```
 cd editor
-npm install
+npm install          # once, and after package.json changes
 npm run dev          # http://localhost:5174
-npm test             # unit tests
 ```
+Open http://localhost:5174 in Chrome or Firefox with the pedal plugged in over USB. Use
+`localhost`, not a LAN address: Web MIDI SysEx only works in a secure context, and the port is
+fixed, so the server exits if 5174 is already in use. Here **PROJECT** reads the repo's
+presets.toml as it is on disk.
+
+Build a static copy:
+```
+cd editor
+npm run build        # type-checks, then writes editor/dist/ (git-ignored)
+npm run preview      # serves editor/dist/ at http://localhost:4174
+```
+editor/dist/ uses relative asset paths, so it can be served from any directory, but only over
+`localhost` or HTTPS, for the same secure-context reason. A build embeds presets.toml as it was
+at build time: rebuild after editing it, or **PROJECT** loads the old bank.
+
+Checks (not part of `make test`):
+```
+cd editor
+npm test             # Vitest unit tests
+npm run typecheck    # tsc --noEmit
+```
+
+Using it:
 - **PROJECT** loads the repo's presets.toml, **OPEN** loads any `.toml` file, and **SAVE**
   downloads the bank. Where the file lands is set by the browser's download setting ("ask where
   to save" lets you overwrite presets.toml).
