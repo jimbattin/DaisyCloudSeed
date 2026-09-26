@@ -150,7 +150,8 @@ unnecessary.
 
 **Files**: `CloudSeed/AudioLib/ShaRandom.h`, `CloudSeed/AudioLib/ShaRandom.cpp`,
 `CloudSeed/Utils/Sha256.h`, `CloudSeed/Utils/Sha256.cpp`, `CloudSeed/MultitapDiffuser.h`,
-`CloudSeed/AllpassDiffuser.h`, `CloudSeed/ReverbChannel.h`; test `tests/engine_alloc_test.cpp`
+`CloudSeed/MultitapDiffuser.cpp`, `CloudSeed/AllpassDiffuser.h`, `CloudSeed/ReverbChannel.h`;
+test `tests/engine_alloc_test.cpp`
 
 Knob and toggle targets are applied inside the audio callback, and 17 of the 47 parameters
 allocated on the heap when written. `ShaRandom::Generate()` built its result from
@@ -183,9 +184,13 @@ rendering all ten presets while sweeping the seeds, `CrossSeed`, `LineDecay`, `T
 `TapCount`, `LineModAmount` and `isReverse` is byte-identical to the old engine at host
 `-O2`, and at `-O3 -ffast-math -mfma -fno-tree-vectorize`. With the host auto-vectorizer on, the
 two differ only by float reassociation, at most 92 dB below peak; the Cortex-M7's
-scalar-only FPU gives GCC nothing to vectorize with. Code size: `-O3` now inlines the smaller
-`MultitapDiffuser::Update()` into each of its `SetParameter` cases, adding 7.5 KB of SRAM
-(`ReverbChannel::SetParameter` 8,128 → 16,416 B).
+scalar-only FPU gives GCC nothing to vectorize with. Code size: with `MultitapDiffuser` all in
+its header, `-O3` inlined the smaller `MultitapDiffuser::Update()` into each of its
+`SetParameter` cases (`ReverbChannel::SetParameter` 8,128 → 16,416 B, +7.5 KB of SRAM). The
+class is now split into `MultitapDiffuser.h` / `MultitapDiffuser.cpp`, so `Update()` is one
+664 B out-of-line function: `SetParameter` is 12,042 B and SRAM is 4,312 B smaller than with
+the header-only version. The render is byte-identical across the split at both host flag sets
+above.
 
 ## 10. Engine state defined before its first read
 

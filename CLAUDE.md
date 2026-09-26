@@ -698,13 +698,13 @@ build cannot be flashed with `make program` (openocd) - libdaisy errors out on t
 ### Compiler Configuration
 
 **Platform**: ARM GCC (`arm-none-eabi-gcc`)
-**CPU**: Cortex-M7 (`-mcpu=cortex-m7`, `CloudSeed/Makefile:69`)
-**Optimization**: `-O3` (`Makefile:20`, `CloudSeed/Makefile:19`)
-**FPU**: Hard float (`-mfpu=fpv5-d16 -mfloat-abi=hard`, `CloudSeed/Makefile:72-75`)
-**Language**: C++14 (`-std=gnu++14`, `CloudSeed/Makefile:66`)
+**CPU**: Cortex-M7 (`-mcpu=cortex-m7`, `CloudSeed/Makefile:70`)
+**Optimization**: `-O3` (`Makefile:20`, `CloudSeed/Makefile:20`)
+**FPU**: Hard float (`-mfpu=fpv5-d16 -mfloat-abi=hard`, `CloudSeed/Makefile:73-76`)
+**Language**: C++14 (`-std=gnu++14`, `CloudSeed/Makefile:67`)
 **Float flags**: `-ffast-math` on both the app (`Makefile:44`) and the library
-(`CloudSeed/Makefile:105`); the library additionally uses `-fno-exceptions`,
-`-finline-functions`, and `-fno-aggressive-loop-optimizations` (`CloudSeed/Makefile:103-107`)
+(`CloudSeed/Makefile:106`); the library additionally uses `-fno-exceptions`,
+`-finline-functions`, and `-fno-aggressive-loop-optimizations` (`CloudSeed/Makefile:104-108`)
 **App type**: `BOOT_SRAM` (`Makefile:6`)
 
 ## Common Modifications
@@ -1299,7 +1299,7 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
   (`libdaisy/core/STM32H750IB_sram.lds:244-251`), which is where `DelayLine`'s `tempBuffer`,
   `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:52-54`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 214,436 B of 480KB (43.63%). Of that, the
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 210,124 B of 480KB (42.75%). Of that, the
   embedded `presets.toml` blob is 48,860 B (`build/presets_toml.o` - it carries the
   per-preset `[preset.knob_map]`, `[preset.toggle_map]`, `[preset.params.reverse]` and
   `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 8,081 B
