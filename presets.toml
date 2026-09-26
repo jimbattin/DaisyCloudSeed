@@ -5,6 +5,8 @@
 #     make && make program-dfu
 # Reflashing any change to this file (comments included) changes the firmware
 # image, which discards every preset saved on the pedal (FS1 held 5 s).
+# A bank uploaded over USB (docs/USB_MIDI.md) overrides this file until it is
+# reverted or different firmware is flashed.
 #
 # Rules enforced by the parser. `make` refuses to build firmware from a file that
 # breaks one; if such a file ever reached the pedal it would stop boot and blink

@@ -5,8 +5,8 @@
 #include "sdram_pool.h"
 #include "pedal_leds.h"
 
-// Presets are defined in presets.toml, embedded into the firmware image by
-// presets_toml.s and parsed once at boot by LoadEmbeddedPresetBank().
+// The built-in preset bank: presets.toml, embedded into the firmware image by
+// presets_toml.s (see EmbeddedPresetText()).
 extern "C" {
     extern const char     presets_toml[];
     extern const uint32_t presets_toml_len;  // includes the terminating NUL
@@ -38,34 +38,45 @@ void* custom_pool_allocate(size_t size) {
 }
 
 /*
- * Boot-only TOML parse arena
+ * TOML parse arena (boot and USB upload validation)
  */
 
-// Carved from the head of custom_pool. Nothing else has allocated from the pool
-// yet (the reverb is constructed afterwards), so the whole region is handed back
-// simply by abandoning it. The heap is deliberately avoided: libnosys' _sbrk
-// grows unchecked from end = 0x30008000 into the 256 KB RAM_D2 region.
+// A dedicated SDRAM buffer, not part of custom_pool: after boot the reverb owns the
+// pool, and a USB upload is validated by a full parse at runtime. Costs 512 KB of
+// SDRAM. Every parse starts from an empty arena and releases it on return. The heap
+// is deliberately avoided: libnosys' _sbrk grows unchecked from end = 0x30008000
+// into the 256 KB RAM_D2 region.
 constexpr size_t TOML_ARENA_SIZE = 512 * 1024;
+DSY_SDRAM_BSS __attribute__((aligned(8))) static char toml_arena[TOML_ARENA_SIZE];
 static size_t toml_arena_index = 0;
 
 static void* toml_arena_alloc(size_t size) {
     const size_t aligned = alignUp8(size);
     if (toml_arena_index + aligned > TOML_ARENA_SIZE) return nullptr;
-    void* ptr = &custom_pool[toml_arena_index];
+    void* ptr = &toml_arena[toml_arena_index];
     toml_arena_index += aligned;
     return ptr;
 }
 
 static void toml_arena_free(void*) {}
 
-bool LoadEmbeddedPresetBank(PresetBank& bank, char* err, int errLen) {
+bool ParsePresetText(const char* text, uint32_t length, PresetBank& bank, char* err, int errLen) {
+    if (length == 0) { snprintf(err, errLen, "empty preset text"); return false; }
+    if (memchr(text, 0, length)) { snprintf(err, errLen, "NUL byte in preset text"); return false; }
     toml_arena_index = 0;
-    // toml_parse() mutates its input, so parse a scratch copy, never the .rodata blob.
-    char* scratch = static_cast<char*>(toml_arena_alloc(presets_toml_len));
+    // toml_parse() mutates its input and needs a terminating NUL, so parse a scratch
+    // copy, never the source (.rodata blob, QSPI mapping or upload buffer).
+    char* scratch = static_cast<char*>(toml_arena_alloc(length + 1));
     if (!scratch) { snprintf(err, errLen, "arena too small"); return false; }
-    memcpy(scratch, presets_toml, presets_toml_len);
+    memcpy(scratch, text, length);
+    scratch[length] = '\0';
     const bool ok = ParsePresetBank(scratch, bank, err, errLen,
                                     toml_arena_alloc, toml_arena_free);
-    toml_arena_index = 0;  // release: custom_pool is untouched from here on
+    toml_arena_index = 0;
     return ok;
+}
+
+const char* EmbeddedPresetText(uint32_t& length) {
+    length = presets_toml_len - 1;
+    return presets_toml;
 }

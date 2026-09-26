@@ -6,6 +6,7 @@
 
 #include "daisy_seed.h"
 #include "preset_bank.h"
+#include "preset_protocol.h"
 
 constexpr uint32_t QSPI_SECTOR_BYTES = 4096;
 constexpr uint32_t USER_PRESET_VALID = 1u;  // erased flash reads 0xFFFFFFFF
@@ -40,7 +41,8 @@ struct UserPreset {
 };
 
 struct UserPresets {
-    uint32_t   firmwareHash;                   // firmwareImageHash() of the image that saved these
+    uint32_t   identity;                       // firmware image hash mixed with the bank hash
+                                               // (PedalStorage::Init()) when these were saved
     UserPreset presets[kMaxPresets];
 
     // Required by PersistentStorage: decides whether Save() erases and writes.
@@ -51,15 +53,34 @@ struct UserPresets {
 static_assert(sizeof(UserPresets) + 4 <= QSPI_SECTOR_BYTES,
               "user presets must fit one QSPI sector");
 
-// Preset index + bypass (QSPI offset 0) and per-preset user edits (offset 0x1000).
+// Bank uploaded over USB (docs/USB_MIDI.md). The header has its own sector, so REVERT
+// erases one sector; the text follows it. Everything stays below the 256 KB the
+// Daisy bootloader never touches (the program area starts at 0x40000).
+constexpr uint32_t STORED_BANK_HEADER_OFFSET = 0x10000;
+constexpr uint32_t STORED_BANK_TEXT_OFFSET   = 0x11000;  // up to PresetProtocol::kMaxTextBytes
+constexpr uint32_t STORED_BANK_MAGIC         = 0x31425343u;  // "CSB1"
+static_assert(STORED_BANK_TEXT_OFFSET + PresetProtocol::kMaxTextBytes <= 0x40000,
+              "stored bank must stay below the bootloader's program area");
+
+struct StoredBankHeader {
+    uint32_t magic;         // STORED_BANK_MAGIC; erased flash reads 0xFFFFFFFF
+    uint32_t length;        // text bytes, no NUL
+    uint32_t textHash;      // Fnv1a32() of the text
+    uint32_t firmwareHash;  // firmwareImageHash() of the image that stored it
+};
+
+// Preset index + bypass (QSPI offset 0), per-preset user edits (offset 0x1000) and
+// the uploaded preset bank (offset 0x10000).
 class PedalStorage
 {
 public:
-    explicit PedalStorage(daisy::QSPIHandle& qspi) : settings_(qspi), userPresets_(qspi) {}
+    explicit PedalStorage(daisy::QSPIHandle& qspi)
+        : qspi_(qspi), settings_(qspi), userPresets_(qspi) {}
 
-    // Boot, before any other call: loads Settings (defaults on a SETTINGS_VERSION
-    // mismatch) and the user presets (wiped when a different firmware image saved them).
-    void Init();
+    // Boot, before any other call except StoredBankText(): loads Settings (defaults on
+    // a SETTINGS_VERSION mismatch) and the user presets, wiped unless they were saved
+    // by this firmware image running the bank whose Fnv1a32() is `presetBankHash`.
+    void Init(uint32_t presetBankHash);
     // The restored preset index, 0 if outside 0..presetCount-1. The corrected value
     // reaches flash through ServiceSettingsSave().
     int  RestoredPreset(int presetCount);
@@ -67,16 +88,33 @@ public:
     // Main loop only. Mirrors pedal state into the RAM copy and writes flash
     // SETTINGS_SAVE_DELAY_MS after the last change.
     void ServiceSettingsSave(int currentPreset, bool bypass);
+    // Main loop only. Mirrors pedal state and writes a pending change now instead of
+    // after the delay; called before a firmware-initiated reboot.
+    void FlushSettingsSave(int currentPreset, bool bypass);
     // One preset's saved edit; valid != USER_PRESET_VALID means "use presets.toml".
     UserPreset& UserSlot(int preset) { return userPresets_.GetSettings().presets[preset]; }
     // Blocking QSPI erase + write of every slot; skipped when flash already matches.
     void SaveUserPresets() { userPresets_.Save(); }
 
+    // The uploaded bank's text (memory-mapped QSPI, not NUL-terminated), or nullptr
+    // unless it was stored by this firmware image and its length and hash check out.
+    const char* StoredBankText(uint32_t& length);
+    // Main loop only, blocking (erase + program + verify, up to ~3 s). The header is
+    // programmed last, so an interrupted write leaves no valid bank.
+    bool WriteStoredBank(const char* text, uint32_t length, uint32_t textHash);
+    // Erases the header sector: the next boot uses the embedded presets.toml.
+    bool EraseStoredBank();
+
 private:
+    uint32_t imageHash();  // firmwareImageHash(), computed once
+
+    daisy::QSPIHandle&                    qspi_;
     daisy::PersistentStorage<Settings>    settings_;
     daisy::PersistentStorage<UserPresets> userPresets_;
     bool     settingsSavePending_ = false;  // RAM copy differs from what was last saved
     uint32_t settingsChangedAtMs_ = 0;      // System::GetNow() of the last change
+    uint32_t imageHash_           = 0;
+    bool     imageHashValid_      = false;
 };
 
 #endif

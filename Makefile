@@ -9,7 +9,7 @@ export APP_TYPE = BOOT_SRAM
 # Source lists must be set before including the core Makefile: it evaluates
 # vpath directives at parse time (libdaisy/core/Makefile:278-284).
 CPP_SOURCES = src/cloudseed.cpp src/preset_bank.cpp src/pedal_leds.cpp src/sdram_pool.cpp \
-              src/pedal_storage.cpp
+              src/pedal_storage.cpp src/preset_protocol.cpp src/usb_midi_link.cpp
 C_SOURCES += third_party/tomlc99/toml.c
 ASM_SOURCES += src/presets_toml.s
 # Library Locations
@@ -82,7 +82,7 @@ presets-check: $(BUILD_DIR)/preset_check
 HOST_TEST_CXXFLAGS = -std=gnu++14 -O1 -Wall -I. -Isrc -Ithird_party/tomlc99
 HOST_TESTS = $(BUILD_DIR)/knob_bank_test $(BUILD_DIR)/toggle_bank_test \
              $(BUILD_DIR)/footswitch_gestures_test $(BUILD_DIR)/preset_bank_test \
-             $(BUILD_DIR)/engine_alloc_test
+             $(BUILD_DIR)/engine_alloc_test $(BUILD_DIR)/preset_protocol_test
 
 # The engine test compiles the whole CloudSeed library for the host.
 CLOUDSEED_HOST_SOURCES = $(wildcard CloudSeed/*.cpp CloudSeed/*/*.cpp)
@@ -100,6 +100,9 @@ $(BUILD_DIR)/preset_bank_test: tests/preset_bank_test.cpp tests/check.h src/pres
 $(BUILD_DIR)/engine_alloc_test: tests/engine_alloc_test.cpp tests/check.h $(CLOUDSEED_HOST_SOURCES) \
 		$(CLOUDSEED_HEADERS) | $(BUILD_DIR)
 	$(HOSTCXX) $(HOST_TEST_CXXFLAGS) -o $@ tests/engine_alloc_test.cpp $(CLOUDSEED_HOST_SOURCES)
+$(BUILD_DIR)/preset_protocol_test: tests/preset_protocol_test.cpp tests/check.h src/preset_protocol.cpp \
+		src/preset_protocol.h | $(BUILD_DIR)
+	$(HOSTCXX) $(HOST_TEST_CXXFLAGS) -o $@ tests/preset_protocol_test.cpp src/preset_protocol.cpp
 
 test: $(HOST_TESTS)
 	./$(BUILD_DIR)/knob_bank_test
@@ -107,6 +110,7 @@ test: $(HOST_TESTS)
 	./$(BUILD_DIR)/footswitch_gestures_test
 	./$(BUILD_DIR)/preset_bank_test tests/fixtures/two_presets.toml
 	./$(BUILD_DIR)/engine_alloc_test
+	./$(BUILD_DIR)/preset_protocol_test
 
 .PHONY: test
 

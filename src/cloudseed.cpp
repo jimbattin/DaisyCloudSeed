@@ -21,6 +21,8 @@
 #include "pedal_leds.h"
 #include "sdram_pool.h"
 #include "pedal_storage.h"
+#include "preset_protocol.h"
+#include "usb_midi_link.h"
 
 using namespace daisy;
 using namespace terrarium;  // This is important for mapping the correct controls to the Daisy Seed on Terrarium PCB
@@ -52,8 +54,8 @@ constexpr float KNOB_SMOOTHING_COEFF = 0.05f;
 constexpr int BYPASS_FOOTSWITCH    = Terrarium::FOOTSWITCH_1;
 constexpr int PRESET_FOOTSWITCH    = Terrarium::FOOTSWITCH_2;
 
-// presets.toml, embedded by presets_toml.s and parsed once at boot
-// (LoadEmbeddedPresetBank()).
+// The active preset bank: the bank uploaded over USB if one is stored for this
+// firmware image, else the embedded presets.toml. Parsed once at boot.
 static PresetBank gPresets;
 static KnobBank gKnobs;
 static ToggleBank gToggles;
@@ -68,6 +70,7 @@ struct PedalState {
     volatile bool triggerPresetRestore   = false;  // set by the callback on the FS1+FS2 5 s hold
     volatile bool saveSnapshotReady      = false;  // callback published gSaveSnapshot; main loop clears
     volatile bool presetChangeInProgress = false;  // main loop is loading a preset: pass through
+    volatile bool uploadActive           = false;  // USB preset upload session: pass through
     volatile bool controlResetPending    = false;  // main loop changed the preset; re-snapshot knobs and toggles
     int currentPreset = 0;  // main loop only
 
@@ -127,6 +130,17 @@ static UserPreset gSaveSnapshot;           // callback writes while !saveSnapsho
 
 // Reverse voice record buffer (ReverseDelay); lives in SDRAM next to custom_pool.
 DSY_SDRAM_BSS static float reverseDelayBuffer[REVERSE_BUFFER_SIZE];
+
+// USB-MIDI preset upload (docs/USB_MIDI.md). Main loop only, except the link's
+// receive callback (USB interrupt), which only assembles SysEx frames.
+static UsbMidiLink    gMidiLink;
+static PresetProtocol gPresetProtocol;
+DSY_SDRAM_BSS static char       gUploadText[PresetProtocol::kMaxTextBytes];
+DSY_SDRAM_BSS static PresetBank gUploadCheck;  // COMMIT's validation parse target
+
+static bool validateUpload(const char* text, uint32_t length, char* err, int errLen) {
+    return ParsePresetText(text, length, gUploadCheck, err, errLen);
+}
 
 /*
  * Presets
@@ -445,7 +459,8 @@ static void audioCallback(AudioHandle::InputBuffer  in,
 
     // The main loop cannot run while this callback does, so read each shared flag once.
     const bool bypass = state.bypass;
-    if (state.presetChangeInProgress) {  // main loop is loading a preset: pass through
+    // Main loop is loading a preset or receiving a USB upload: pass through.
+    if (state.presetChangeInProgress || state.uploadActive) {
         memcpy(out[0], in[0], AUDIO_BUFFER_SIZE * sizeof(float));
         return;
     }
@@ -507,6 +522,53 @@ static void keepCoreBusy() {
     gBusySink  = sinf(phase);
 }
 
+// Main loop only. Answers one received SysEx frame per pass (preset_protocol.h) and
+// keeps the callback's passthrough gate in step with the upload session. COMMIT
+// validation (a full parse) and the QSPI write block here while the gate is closed.
+static void serviceUsbPresetLink() {
+    gMidiLink.Service();
+    if (gMidiLink.FrameReady()) {
+        const UploadAction action = gPresetProtocol.Handle(gMidiLink.Frame(),
+                                                           gMidiLink.FrameLength(),
+                                                           System::GetNow());
+        gMidiLink.ReleaseFrame();
+        bool ok = false;
+        if (action == UploadAction::Commit)
+            ok = gStorage.WriteStoredBank(gPresetProtocol.ReceivedText(),
+                                          gPresetProtocol.ReceivedLength(),
+                                          gPresetProtocol.ReceivedHash());
+        else if (action == UploadAction::Revert)
+            ok = gStorage.EraseStoredBank();
+        if (action != UploadAction::None)
+            gPresetProtocol.Finish(action, ok);
+        if (gPresetProtocol.ReplyLength())
+            gMidiLink.SendSysEx(gPresetProtocol.Reply(), gPresetProtocol.ReplyLength());
+        // A failed COMMIT has already erased the stored bank; if that was the bank
+        // running now, INFO/READ would describe flash that no longer holds it, so
+        // reboot as well: the pedal comes back on the embedded presets.toml.
+        const bool destroyedActive = action == UploadAction::Commit && !ok
+                                     && gPresetProtocol.Active().uploaded;
+        if ((action != UploadAction::None && ok) || destroyedActive) {
+            // Preset/bypass changes are otherwise written 3 s late; this reboot is ours.
+            gStorage.FlushSettingsSave(state.currentPreset, state.bypass);
+            System::Delay(100);  // let the reply's USB IN transfer complete
+            NVIC_SystemReset();  // the bootloader reloads the app, which boots the new bank
+        }
+    }
+    gPresetProtocol.Tick(System::GetNow());
+
+    // Passthrough gate follows the session.
+    const bool active = gPresetProtocol.SessionActive();
+    if (active && !state.uploadActive) {
+        state.uploadActive = true;
+    } else if (!active && state.uploadActive) {
+        reverb->ClearBuffers();            // gate still closed: the callback is not in the reverb
+        state.controlResetPending = true;  // re-park knobs and toggles moved during the session
+        std::atomic_signal_fence(std::memory_order_seq_cst);  // cleared before reopening
+        state.uploadActive = false;
+    }
+}
+
 int main(void) {
     __set_FPSCR(__get_FPSCR() | (1u << 24)); // FZ: flush denormals to zero in hardware
     hw.Init();
@@ -519,12 +581,21 @@ int main(void) {
     if (hw.AudioBlockSize() != AUDIO_BUFFER_SIZE)
         FatalErrorLoop();
 
-    // Parse the embedded presets.toml. SDRAM is only usable after hw.Init(), and
-    // the ReverbController below is the first consumer of custom_pool, so the
-    // scratch arena window is exactly here.
+    // Preset bank: the uploaded bank in QSPI if one is stored for this firmware image
+    // and parses, else the embedded presets.toml. SDRAM is only usable after hw.Init().
     char presetErr[128];
-    if (!LoadEmbeddedPresetBank(gPresets, presetErr, sizeof presetErr))
-        FatalErrorLoop();
+    ActiveBank active = {};
+    active.text     = gStorage.StoredBankText(active.length);
+    active.uploaded = active.text
+                      && ParsePresetText(active.text, active.length, gPresets, presetErr,
+                                         sizeof presetErr);
+    if (!active.uploaded) {
+        active.text = EmbeddedPresetText(active.length);
+        if (!ParsePresetText(active.text, active.length, gPresets, presetErr, sizeof presetErr))
+            FatalErrorLoop();
+    }
+    active.hash        = Fnv1a32(active.text, active.length);
+    active.presetCount = gPresets.count;
 
     const float sampleRate = hw.AudioSampleRate();
 
@@ -546,9 +617,9 @@ int main(void) {
     for (int i = 0; i < kKnobCount; i++)
         hw.knob[kKnobIndex[i]].SetCoeff(KNOB_SMOOTHING_COEFF);
 
-    // Flash settings and user preset edits (wiped if a different firmware image saved
-    // them). Must precede loadPreset(), which reads the user slots.
-    gStorage.Init();
+    // Flash settings and user preset edits (wiped unless this firmware image running
+    // this bank saved them). Must precede loadPreset(), which reads the user slots.
+    gStorage.Init(active.hash);
     state.currentPreset = gStorage.RestoredPreset(gPresets.count);
     state.bypass        = gStorage.RestoredBypass();
     loadPreset(state.currentPreset);
@@ -571,6 +642,9 @@ int main(void) {
         hw.ProcessAnalogControls();
         System::Delay(1);
     }
+
+    gPresetProtocol.Init(gUploadText, validateUpload, active);
+    gMidiLink.Init();
 
     hw.StartAudio(audioCallback);
 
@@ -602,6 +676,9 @@ int main(void) {
             loadPresetGated((state.currentPreset + 1) % gPresets.count);
             StartPresetBlink(state.blinkPattern);
         }
+
+        // USB preset upload/read/revert; a successful COMMIT or REVERT reboots here.
+        serviceUsbPresetLink();
 
         gStorage.ServiceSettingsSave(state.currentPreset, state.bypass);
 

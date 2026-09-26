@@ -221,6 +221,40 @@ before `DelaySeed` is applied is zero-initialised by `SeedSeries` (§9).
 sound is unchanged; the same `0xBE` check now yields `SampleDelay` 85 and 47, `ModRate` 0 at
 `-O0` and `-O1`.
 
+## 11. USB-MIDI preset link: no idle cost
+
+**Files**: `src/usb_midi_link.cpp`, `src/preset_protocol.cpp`, `src/cloudseed.cpp`
+(`serviceUsbPresetLink()`, the callback's passthrough gate)
+
+The preset upload link (docs/USB_MIDI.md) keeps USB-MIDI running at every boot, next to the
+audio callback. The USB OTG FS interrupt shares priority 0 with the audio DMA interrupts
+(`libdaisy/src/usbd/usbd_conf.c:102-107`, `libdaisy/src/sys/dma.c:17-50`), so time spent in it
+delays the callback directly.
+
+**Fix**: the design keeps the audio path's cost at one flag test:
+- The stack raises no interrupts while the link is idle or unplugged: SOF interrupts are off
+  and VBUS sensing is on (`libdaisy/src/usbd/usbd_conf.c:420,424`).
+- The receive callback (USB ISR) only appends bytes to `SysExAssembler` (no calls, no
+  allocation). Decoding, replies, validation (a full TOML parse) and QSPI writes run in the
+  main loop.
+- During an upload session the callback passes audio through
+  (`state.presetChangeInProgress || state.uploadActive`), so COMMIT's parse and flash write
+  never compete with the reverb.
+- Outside a session, INFO and READ traffic costs the callback only the interrupt time to
+  receive a USB packet.
+
+**Result**: the audio callback compiles to the same 33 calls as before, with one added `ldrb`
+for the gate (`arm-none-eabi-objdump` of `audioCallback` before and after, registers
+normalised). Memory cost, from the linker report:
+- DTCMRAM +15,136 B, mostly libdaisy's USB device stack: `UserRx/TxBufferFS/HS` 4 × 2 KB,
+  `midi_usb_handle` 2,112 B, `hpcd_USB_OTG_FS` 1,292 B.
+- SRAM +10,972 B.
+- SDRAM +627,424 B: the 512 KB parse arena, which is now separate from `custom_pool`, the
+  96 KiB upload buffer, and the 4,804 B validation `PresetBank`.
+
+`.sdram_bss` is never zeroed, so the SDRAM buffers add no boot time. The USB init adds about
+10 ms (`libdaisy/src/hid/usb_midi.cpp:125`).
+
 ## Verification performed
 
 1. **Build** (at the time of §1-§8; current memory figures are in CLAUDE.md, "Memory
@@ -232,3 +266,7 @@ sound is unchanged; the same `0xBE` check now yields `SampleDelay` 85 and 47, `M
    through 1-5, and processed an impulse-then-silence buffer through the pre-fix
    (steps 2-5 reverted) and post-fix code. Output was bit-identical across all 480
    samples, exit code 0, no NaN/Inf in either build.
+3. **USB-MIDI link (§11)**:
+   - `make test` runs `preset_protocol_test`, which covers framing, USB-MIDI packing, sequencing, errors and timeouts.
+   - A throwaway host simulator drove the protocol module and the real preset parser through a raw pty with a stdlib-only Python host. It uploaded presets.toml with one preset changed, read it back byte-identical, got the parser's message for a `blinks = 99` file, timed out a lone BEGIN after 5 s, and reverted.
+   - The before/after callback disassembly comparison is described in §11.

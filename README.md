@@ -22,11 +22,15 @@ This fork extends those capabilities and adds a few extras:
 - Bypass state is saved between power cycles
 - Per-preset user save: hold FS 1 for 5 s to store the current sound into the current preset;
   hold FS 1 + FS 2 together for 5 s to restore that preset to its factory values. Saved
-  presets survive power cycles and are discarded when different firmware is flashed
+  presets survive power cycles and are discarded when different firmware is flashed or a
+  different preset bank is uploaded
 - Agent-guided performance optimizations
 - Reduced 1khz whine while active or bypassed 
 - Presets are defined in [presets.toml](presets.toml), not in C++. The file is compiled into
   the firmware image and parsed at boot; edit values there and reflash
+- Preset upload over USB: the Seed's USB port is a USB-MIDI device, so a web page can
+  upload a new presets.toml, read the active one back, or revert to the built-in bank without
+  reflashing ([docs/USB_MIDI.md](docs/USB_MIDI.md))
 
 # DaisyCloudSeed (GuitarML fork for Terrarium)
 Cloud Seed is an open source algorithmic reverb plugin under the MIT license, which can be found at [ValdemarOrn/CloudSeed](https://github.com/ValdemarOrn/CloudSeed).
@@ -107,9 +111,32 @@ parser rejects; preset values themselves are free to change.
 Preset order is stored in flash: append new `[[preset]]` entries at the end, and bump
 `SETTINGS_VERSION` in `src/pedal_storage.cpp` if you reorder or delete any.
 
+## Uploading presets over USB
+
+With the pedal connected over USB, a host program such as a web page using Web MIDI can:
+- upload a complete presets.toml;
+- read back the bank that is active;
+- revert to the bank built into the firmware.
+
+No reflash is needed. The pedal is a class-compliant USB-MIDI device from power-up, so no
+driver is needed.
+
+- The upload is checked with the same parser as `make presets-check` before anything is
+  stored. A rejected file changes nothing, and the parser's message is sent back.
+- During an upload the reverb is switched off and the dry signal passes through.
+- A successful upload or revert reboots the pedal. The USB port disappears for about 3 s.
+- The uploaded bank replaces the built-in presets.toml until you revert, or until different
+  firmware is flashed.
+- Every change of the active bank discards the presets saved on the pedal (FS 1 held 5 s).
+
+The protocol is documented for host authors in [docs/USB_MIDI.md](docs/USB_MIDI.md). To test a
+pedal from Linux without a web page, use `tools/usb_preset_host.py`; the full on-pedal
+validation checklist is [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md).
+
 ## Saving and restoring presets on the pedal
 
-presets.toml is the **factory** version of every preset and is never modified on the pedal.
+presets.toml, or the bank uploaded over USB, is the **factory** version of every preset and
+is never modified by saving on the pedal.
 
 - **Save**: hold FS 1 for 5 s. The current sound - all reverb parameters, including every knob
   change, plus the reverse-delay window and the state of every toggle target - replaces the
@@ -122,10 +149,10 @@ presets.toml is the **factory** version of every preset and is never modified on
   happens on release.
 
 Saved presets are stored in QSPI flash alongside the bypass/preset settings and survive power
-cycles. Flashing any different firmware (including a presets.toml edit) discards every saved
-preset, so the pedal boots with the factory versions. Re-flashing a byte-identical `.bin` keeps
-them. The knob and toggle maps, the delay-line counts, and blink timing always come from
-presets.toml.
+cycles. Flashing any different firmware (including a presets.toml edit), uploading a different
+bank over USB, or reverting an uploaded bank discards every saved preset, so the pedal boots
+with the factory versions. Re-flashing a byte-identical `.bin` keeps them. The knob and toggle
+maps, the delay-line counts, and blink timing always come from the active preset bank.
 
 The current preset and the bypass state are saved automatically 3 s after the last change;
 switching the pedal off sooner than that loses the change. A new pedal (or one whose saved
