@@ -8,7 +8,7 @@ import { PresetLink } from './midi/client';
 import { ProtocolError, fnv1a32, type InfoReply } from './midi/protocol';
 import { connectPedal, isWebMidiSupported } from './midi/webMidi';
 import { docText, loadBank } from './model/bank';
-import { initialState, isDirty, problems, reducer, type Source } from './model/state';
+import { initialState, isDirty, presetChanges, problems, reducer, type Source } from './model/state';
 
 interface Confirm {
   title: string;
@@ -32,6 +32,7 @@ export function App() {
   const dirty = isDirty(state);
   const { doc, presets, selected, page } = state;
   const preset = presets[selected];
+  const changes = presets.map((_, i) => presetChanges(state, i));
 
   const inSync = useMemo(
     () => !!info && !!doc && fnv1a32(new TextEncoder().encode(docText(doc))) === info.activeHash,
@@ -207,21 +208,22 @@ export function App() {
         <div class="body">
           <ProgramKeys
             presets={presets}
+            changes={changes}
             selected={selected}
             onSelect={(i) => dispatch({ type: 'select', preset: i })}
             onDuplicate={() => dispatch({ type: 'duplicate' })}
             onDelete={() => dispatch({ type: 'delete' })}
           />
           <div>
-            <PageKeys page={page} onPage={(p) => dispatch({ type: 'page', page: p })} />
+            <PageKeys page={page} changes={changes[selected]} onPage={(p) => dispatch({ type: 'page', page: p })} />
             {page === 'knobs' ? (
-              <KnobMapPage preset={preset} dispatch={dispatch} />
+              <KnobMapPage preset={preset} changes={changes[selected]} dispatch={dispatch} />
             ) : page === 'toggles' ? (
-              <ToggleMapPage preset={preset} dispatch={dispatch} />
+              <ToggleMapPage preset={preset} changes={changes[selected]} dispatch={dispatch} />
             ) : page === 'setup' ? (
-              <SetupPage preset={preset} dispatch={dispatch} />
+              <SetupPage preset={preset} changes={changes[selected]} dispatch={dispatch} />
             ) : (
-              <ParamPage page={page} preset={preset} dispatch={dispatch} />
+              <ParamPage page={page} preset={preset} changes={changes[selected]} dispatch={dispatch} />
             )}
           </div>
         </div>

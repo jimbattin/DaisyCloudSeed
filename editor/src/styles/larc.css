@@ -19,6 +19,7 @@
   --larc-key-dark: #3a3d41;
   --larc-silk: #e6e6e6;
   --larc-mono: ui-monospace, 'DejaVu Sans Mono', Menlo, monospace;
+  --larc-edit: #f0a830;
 }
 
 .larc {
@@ -194,6 +195,36 @@
   box-shadow: var(--larc-led-glow);
 }
 
+/* Edit mark: differs from the bank as last loaded or saved. Dot = changed, ring = preset added. */
+.larc .edit-mark {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--larc-edit);
+  pointer-events: none;
+}
+
+.larc .key.added .edit-mark {
+  width: 6px;
+  height: 6px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--larc-edit);
+}
+
+.larc .strip,
+.larc .setup-grid label,
+.larc .bank-chip {
+  position: relative;
+}
+
+.larc .strip:has(> .edit-mark) > .silk,
+.larc .setup-grid label:has(> .edit-mark) {
+  color: var(--larc-edit);
+}
+
 /* Program keys: 4 x 4 grid plus DUP / DEL. */
 .larc .program-keys {
   display: grid;
@@ -365,6 +396,60 @@
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
+}
+
+/* A (primary, `_a`) / B (secondary, `_b`, FS2 held) chips: ivory and dark like the two key colours. */
+.larc .map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.larc .map-slot {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.larc .map-slot select.led {
+  flex: 1;
+  min-width: 0;
+}
+
+.larc .bank-chip {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border: 1px solid;
+  border-bottom-width: 3px;
+  border-radius: 3px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.larc .bank-a .bank-chip {
+  background: var(--larc-key);
+  color: var(--larc-key-text);
+  border-color: #8f8a7f;
+}
+
+.larc .bank-b .bank-chip {
+  background: var(--larc-key-dark);
+  color: var(--larc-silk);
+  border-color: #1e2022;
+}
+
+.larc .bank-chip .edit-mark {
+  top: 2px;
+  right: 2px;
+}
+
+.larc .map-legend strong {
+  color: var(--larc-silk);
 }
 
 .larc .setup-grid {

@@ -15,6 +15,12 @@ import { KNOB_TARGETS, TOGGLE_TARGETS, type PageId } from './schema';
 
 export type Source = 'project' | 'file' | 'pedal';
 
+/** Where a current preset came from: its index in `baseline`, and whether it was duplicated since. */
+export interface Origin {
+  index: number;
+  added: boolean;
+}
+
 export interface EditorState {
   doc: BankDoc | null;
   presets: Preset[];
@@ -22,6 +28,10 @@ export interface EditorState {
   page: PageId;
   /** Text as last loaded or saved; the bank is dirty when it differs. */
   savedText: string;
+  /** Presets as last loaded or saved: what edit marks compare against. */
+  baseline: Preset[];
+  /** One per preset; kept in step with `presets` through duplicate and delete. */
+  origins: Origin[];
   source: Source | null;
   fileName: string | null;
   error: string | null;
@@ -55,6 +65,8 @@ export const initialState: EditorState = {
   selected: 0,
   page: 'input',
   savedText: '',
+  baseline: [],
+  origins: [],
   source: null,
   fileName: null,
   error: null,
@@ -69,9 +81,39 @@ export const problems = (s: EditorState): string[] =>
 /** Printable ASCII without `"` and `\`, so a name is always a plain TOML basic string. */
 export const sanitizeName = (name: string): string => name.replace(/[^\x20-\x7e]|["\\]/g, '').slice(0, MAX_NAME_BYTES);
 
+/**
+ * Changes of one preset against its baseline. Field ids: `params.<group.Key>`, `knob.<bank>.<i>`,
+ * `toggle.<bank>.<i>`, or a scalar `Preset` property (`name`, `blinks`, `ledOnMs`, ...).
+ */
+export interface PresetChanges {
+  /** The baseline preset; for a duplicate, the preset it was copied from. */
+  original: Preset;
+  added: boolean;
+  fields: Record<string, true>;
+}
+
+export const SETUP_FIELDS = ['name', 'blinks', 'ledOnMs', 'ledOffMs', 'ledPauseMs', 'defaultDelayLines', 'maxDelayLines'] as const;
+
+export function presetChanges(s: EditorState, i: number): PresetChanges {
+  const p = s.presets[i];
+  const { index, added } = s.origins[i];
+  const original = s.baseline[index];
+  const fields: Record<string, true> = {};
+  for (const f of SETUP_FIELDS) if (p[f] !== original[f]) fields[f] = true;
+  for (const k in p.params) if (p.params[k] !== original.params[k]) fields[`params.${k}`] = true;
+  for (const bank of [0, 1] as const) {
+    p.knobMap[bank].forEach((t, k) => t !== original.knobMap[bank][k] && (fields[`knob.${bank}.${k}`] = true));
+    p.toggleMap[bank].forEach((t, k) => t !== original.toggleMap[bank][k] && (fields[`toggle.${bank}.${k}`] = true));
+  }
+  return { original, added, fields };
+}
+
+const identityOrigins = (presets: Preset[]): Origin[] => presets.map((_, index) => ({ index, added: false }));
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-const SCALAR_PROP: Record<ScalarField, keyof Preset> = {
+/** The `Preset` property each scalar field edits. */
+export const SCALAR_PROP: Record<ScalarField, Exclude<(typeof SETUP_FIELDS)[number], 'name'>> = {
   blinks: 'blinks',
   led_on_ms: 'ledOnMs',
   led_off_ms: 'ledOffMs',
@@ -105,6 +147,8 @@ export function reducer(s: EditorState, a: Action): EditorState {
       presets: r.presets,
       selected: 0,
       savedText: a.text,
+      baseline: r.presets,
+      origins: identityOrigins(r.presets),
       source: a.source,
       fileName: a.fileName,
       error: null,
@@ -112,7 +156,8 @@ export function reducer(s: EditorState, a: Action): EditorState {
   }
   if (a.type === 'page') return { ...s, page: a.page };
   if (a.type === 'dismissError') return { ...s, error: null };
-  if (a.type === 'saved') return { ...s, savedText: a.text, fileName: a.fileName };
+  if (a.type === 'saved')
+    return { ...s, savedText: a.text, fileName: a.fileName, baseline: s.presets, origins: identityOrigins(s.presets) };
   if (!s.doc) return s;
 
   const preset = s.presets[s.selected];
@@ -174,13 +219,15 @@ export function reducer(s: EditorState, a: Action): EditorState {
       let doc = duplicatePreset(s.doc, s.selected);
       doc = setField(doc, index, 'name', `"${preset.name.slice(0, MAX_NAME_BYTES - 5)} copy"`);
       doc = setField(doc, index, 'blinks', String(Math.min(index + 1, 20)));
-      return { ...s, doc, presets: reload(docText(doc)).presets, selected: index };
+      const origins = [...s.origins, { index: s.origins[s.selected].index, added: true }];
+      return { ...s, doc, presets: reload(docText(doc)).presets, origins, selected: index };
     }
 
     case 'delete': {
       if (s.presets.length <= 1) return s;
       const { doc, presets } = reload(docText(deletePreset(s.doc, s.selected)));
-      return { ...s, doc, presets, selected: Math.min(s.selected, presets.length - 1) };
+      const origins = s.origins.filter((_, i) => i !== s.selected);
+      return { ...s, doc, presets, origins, selected: Math.min(s.selected, presets.length - 1) };
     }
   }
 }

@@ -16,20 +16,23 @@ export interface KeyProps {
   dark?: boolean;
   wide?: boolean;
   title?: string;
+  /** Edit mark in the top-right corner: a dot for changed, a ring for added since load/save. */
+  mark?: 'edited' | 'added';
   onClick: () => void;
 }
 
-export function Key({ label, pressed, disabled, dark, wide, title, onClick }: KeyProps) {
+export function Key({ label, pressed, disabled, dark, wide, title, mark, onClick }: KeyProps) {
   return (
     <button
       type="button"
-      class={['key', dark && 'dark', wide && 'wide'].filter(Boolean).join(' ')}
+      class={['key', dark && 'dark', wide && 'wide', mark].filter(Boolean).join(' ')}
       aria-pressed={pressed ? 'true' : 'false'}
       disabled={disabled}
       title={title}
       onClick={onClick}
     >
       <span class="key-led" />
+      {mark && <span class="edit-mark" />}
       {label}
     </button>
   );

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { docText } from './bank';
-import { initialState, isDirty, problems, reducer, type Action, type EditorState } from './state';
+import { initialState, isDirty, presetChanges, problems, reducer, type Action, type EditorState } from './state';
 
 const fixture = readFileSync(new URL('../../../tests/fixtures/two_presets.toml', import.meta.url), 'utf8');
 
@@ -77,5 +77,37 @@ describe('reducer', () => {
     expect(ok.presets[0].knobMap[1][5]).toBe('late.LineDecay');
     expect(line(ok, 'knob6_b')).toBe('knob6_b = "late.LineDecay"');
     expect(run(loaded, { type: 'setToggle', bank: 0, toggle: 0, target: 'late.LineDecay' })).toBe(loaded);
+  });
+
+  describe('presetChanges', () => {
+    const fields = (s: EditorState, i: number) => Object.keys(presetChanges(s, i).fields);
+
+    it('marks exactly the edited fields, and nothing after a save', () => {
+      const s = run(
+        loaded,
+        { type: 'setParam', key: 'input.PreDelay', value: 0.5 },
+        { type: 'setKnob', bank: 1, knob: 5, target: 'late.LineDecay' },
+        { type: 'setScalar', field: 'blinks', value: 4 },
+      );
+      expect(fields(s, 0).sort()).toEqual(['blinks', 'knob.1.5', 'params.input.PreDelay']);
+      expect(fields(s, 1)).toEqual([]);
+      expect(presetChanges(s, 0).original.params['input.PreDelay']).toBe(loaded.presets[0].params['input.PreDelay']);
+      expect(fields(run(s, { type: 'saved', text: docText(s.doc!), fileName: null }), 0)).toEqual([]);
+    });
+
+    it('compares a preset that moved down after a delete with its own original', () => {
+      const s = run(loaded, { type: 'delete' });
+      expect(s.presets[0].name).toBe('Through the Looking Glass');
+      expect(presetChanges(s, 0)).toMatchObject({ added: false, fields: {} });
+    });
+
+    it('flags a duplicate as added and compares it with its source', () => {
+      const s = run(loaded, { type: 'select', preset: 1 }, { type: 'duplicate' });
+      const c = presetChanges(s, 2);
+      expect(c.added).toBe(true);
+      expect(c.original.name).toBe('Through the Looking Glass');
+      expect(Object.keys(c.fields).sort()).toEqual(['blinks', 'name']);
+      expect(presetChanges(run(s, { type: 'saved', text: docText(s.doc!), fileName: null }), 2).added).toBe(false);
+    });
   });
 });

@@ -10,14 +10,20 @@ export interface StripProps {
   /** Knob / toggle slots mapped to this parameter, e.g. ['K1A', 'S2B']. */
   badges: string[];
   onChange: (v: number) => void;
+  /** Display text of the value as loaded or saved, present only when `value` differs from it. */
+  original?: string;
 }
 
 const SEED_SCALE = 1e6;
 
-export function Fader({ def, value, preset, badges, onChange }: StripProps) {
+const tooltip = (def: ParamDef, original: string | undefined) =>
+  original === undefined ? def.description : `${def.description}\nOriginal: ${original}`;
+
+export function Fader({ def, value, preset, badges, onChange, original }: StripProps) {
   const seed = def.entry === 'seed';
   return (
-    <div class="strip" title={def.description}>
+    <div class="strip" title={tooltip(def, original)}>
+      {original !== undefined && <span class="edit-mark" />}
       <Led text={formatValue(def.key, value, preset)} />
       <input
         type="range"
@@ -26,7 +32,7 @@ export function Fader({ def, value, preset, badges, onChange }: StripProps) {
         step={0.0001}
         value={value}
         aria-label={def.label}
-        title={def.description}
+        title={tooltip(def, original)}
         onInput={(e) => onChange(Number(e.currentTarget.value))}
       />
       <span class="silk">{def.label}</span>
@@ -56,13 +62,14 @@ export function Fader({ def, value, preset, badges, onChange }: StripProps) {
   );
 }
 
-export function SwitchStrip({ def, value, preset, badges, onChange }: StripProps) {
+export function SwitchStrip({ def, value, preset, badges, onChange, original }: StripProps) {
   const on = value >= 0.5;
   return (
-    <div class="strip" title={def.description}>
+    <div class="strip" title={tooltip(def, original)}>
+      {original !== undefined && <span class="edit-mark" />}
       <Led text={formatValue(def.key, value, preset)} />
       <div class="switch-slot">
-        <Key label={on ? 'ON' : 'OFF'} pressed={on} title={def.description} onClick={() => onChange(on ? 0 : 1)} />
+        <Key label={on ? 'ON' : 'OFF'} pressed={on} title={tooltip(def, original)} onClick={() => onChange(on ? 0 : 1)} />
       </div>
       <span class="silk">{def.label}</span>
       <span class="badges">{badges.join(' ')}</span>

@@ -1,16 +1,56 @@
 import type { Dispatch } from 'preact/hooks';
 import type { Preset } from '../model/bank';
-import { MAX_NAME_BYTES, TOTAL_LINE_COUNT } from '../model/bank';
+import { MAX_NAME_BYTES, TOTAL_LINE_COUNT, formatNorm } from '../model/bank';
+import { formatValue } from '../model/scale';
 import { GROUPS, KNOB_TARGETS, PAGES, PARAMS, TOGGLE_TARGETS, type PageId } from '../model/schema';
-import { sanitizeName, type Action, type ScalarField } from '../model/state';
+import {
+  SCALAR_PROP,
+  SETUP_FIELDS,
+  sanitizeName,
+  type Action,
+  type PresetChanges,
+  type ScalarField,
+} from '../model/state';
 import { Key, NumberField } from './controls';
 import { Fader, SwitchStrip } from './Fader';
 
-export function PageKeys({ page, onPage }: { page: PageId; onPage: (p: PageId) => void }) {
+interface PageProps {
+  preset: Preset;
+  /** Changes of `preset` since load / save, from `presetChanges()`. */
+  changes: PresetChanges;
+  dispatch: Dispatch<Action>;
+}
+
+function pageEdited(page: (typeof PAGES)[number], fields: Record<string, true>): boolean {
+  if (page.id === 'knobs' || page.id === 'toggles') {
+    const prefix = page.id === 'knobs' ? 'knob.' : 'toggle.';
+    return Object.keys(fields).some((f) => f.startsWith(prefix));
+  }
+  if (page.id === 'setup') return SETUP_FIELDS.some((f) => fields[f]);
+  return page.keys.some((k) => fields[`params.${k}`]);
+}
+
+export function PageKeys({
+  page,
+  changes,
+  onPage,
+}: {
+  page: PageId;
+  changes: PresetChanges;
+  onPage: (p: PageId) => void;
+}) {
   return (
     <div class="page-keys">
       {PAGES.map((p) => (
-        <Key key={p.id} label={p.label} wide pressed={p.id === page} dark onClick={() => onPage(p.id)} />
+        <Key
+          key={p.id}
+          label={p.label}
+          wide
+          pressed={p.id === page}
+          dark
+          mark={pageEdited(p, changes.fields) ? 'edited' : undefined}
+          onClick={() => onPage(p.id)}
+        />
       ))}
     </div>
   );
@@ -30,13 +70,14 @@ function badgesFor(preset: Preset, key: string): string[] {
 
 const BANK_SLOTS = 6;
 
-export function ParamPage({ page, preset, dispatch }: { page: PageId; preset: Preset; dispatch: Dispatch<Action> }) {
+export function ParamPage({ page, preset, changes, dispatch }: PageProps & { page: PageId }) {
   const keys = PAGES.find((p) => p.id === page)!.keys;
   return (
     <div class="fader-bank">
       {keys.map((key) => {
         const def = PARAMS[key];
         const Strip = def.kind === 'switch' ? SwitchStrip : Fader;
+        const was = changes.original.params[key];
         return (
           <Strip
             key={key}
@@ -44,6 +85,9 @@ export function ParamPage({ page, preset, dispatch }: { page: PageId; preset: Pr
             value={preset.params[key]}
             preset={preset}
             badges={badgesFor(preset, key)}
+            original={
+              changes.fields[`params.${key}`] ? `${formatValue(key, was, changes.original)} (${formatNorm(was)})` : undefined
+            }
             onChange={(value) => dispatch({ type: 'setParam', key, value })}
           />
         );
@@ -59,11 +103,14 @@ function TargetSelect({
   value,
   options,
   label,
+  original,
   onChange,
 }: {
   value: string;
   options: string[];
   label: string;
+  /** Target as loaded or saved, present only when `value` differs from it. */
+  original?: string;
   onChange: (target: string) => void;
 }) {
   const groups = [...Object.keys(GROUPS), 'reverse', 'delay_lines'];
@@ -71,7 +118,7 @@ function TargetSelect({
     <select
       class="led"
       aria-label={label}
-      title={`${value}: ${PARAMS[value].description}`}
+      title={`${value}: ${PARAMS[value].description}${original === undefined ? '' : `\nOriginal: ${original}`}`}
       value={value}
       onChange={(e) => onChange(e.currentTarget.value)}
     >
@@ -91,62 +138,82 @@ function TargetSelect({
   );
 }
 
-function MapPage({
-  preset,
-  kind,
-  dispatch,
-}: {
-  preset: Preset;
-  kind: 'knob' | 'toggle';
-  dispatch: Dispatch<Action>;
-}) {
+/** Map banks: index 0 is the `_a` key, 1 the `_b` key. */
+const BANKS = [
+  { letter: 'A', css: 'bank-a', name: 'Primary', note: 'normal playing' },
+  { letter: 'B', css: 'bank-b', name: 'Secondary', note: 'while FS2 is held' },
+] as const;
+
+function MapPage({ preset, changes, kind, dispatch }: PageProps & { kind: 'knob' | 'toggle' }) {
   const map = kind === 'knob' ? preset.knobMap : preset.toggleMap;
+  const originalMap = kind === 'knob' ? changes.original.knobMap : changes.original.toggleMap;
   const options = kind === 'knob' ? KNOB_TARGETS : TOGGLE_TARGETS;
   const title = kind === 'knob' ? 'KNOB' : 'SW';
   return (
     <div>
+      <div class="map-legend">
+        {BANKS.map((b) => (
+          <span key={b.letter} class={`map-slot ${b.css}`}>
+            <span class="bank-chip">{b.letter}</span>
+            <span class="silk">
+              <strong>{b.name}</strong> &middot; {b.note}
+            </span>
+          </span>
+        ))}
+      </div>
       <div class={`map-grid ${kind}s`}>
         {map[0].map((_, i) => (
           <div key={i} class="map-col panel">
             <span class="silk">
               {title} {i + 1}
             </span>
-            {([0, 1] as const).map((bank) => (
-              <TargetSelect
-                key={bank}
-                label={`${title} ${i + 1} ${bank ? 'B' : 'A'}`}
-                value={map[bank][i]}
-                options={options}
-                onChange={(target) =>
-                  dispatch(
-                    kind === 'knob'
-                      ? { type: 'setKnob', bank, knob: i, target }
-                      : { type: 'setToggle', bank, toggle: i, target },
-                  )
-                }
-              />
-            ))}
+            {([0, 1] as const).map((bank) => {
+              const b = BANKS[bank];
+              const edited = changes.fields[`${kind}.${bank}.${i}`];
+              return (
+                <div key={bank} class={`map-slot ${b.css}`}>
+                  <span class="bank-chip" title={`${b.name}: ${b.note}`}>
+                    {b.letter}
+                    {edited && <span class="edit-mark" />}
+                  </span>
+                  <TargetSelect
+                    label={`${title} ${i + 1} ${b.letter} ${b.name}`}
+                    value={map[bank][i]}
+                    options={options}
+                    original={edited ? originalMap[bank][i] : undefined}
+                    onChange={(target) =>
+                      dispatch(
+                        kind === 'knob'
+                          ? { type: 'setKnob', bank, knob: i, target }
+                          : { type: 'setToggle', bank, toggle: i, target },
+                      )
+                    }
+                  />
+                </div>
+              );
+            })}
           </div>
         ))}
       </div>
-      <p class="silk">A = normal, B = while FS2 held</p>
     </div>
   );
 }
 
-export const KnobMapPage = (props: { preset: Preset; dispatch: Dispatch<Action> }) => <MapPage {...props} kind="knob" />;
-export const ToggleMapPage = (props: { preset: Preset; dispatch: Dispatch<Action> }) => (
-  <MapPage {...props} kind="toggle" />
-);
+export const KnobMapPage = (props: PageProps) => <MapPage {...props} kind="knob" />;
+export const ToggleMapPage = (props: PageProps) => <MapPage {...props} kind="toggle" />;
 
-export function SetupPage({ preset, dispatch }: { preset: Preset; dispatch: Dispatch<Action> }) {
-  const scalar = (field: ScalarField, label: string, value: number, min: number, max: number, step = 1) => (
-    <label class="silk">
+export function SetupPage({ preset, changes, dispatch }: PageProps) {
+  /** Tooltip naming the loaded / saved value, present only when the field was edited. */
+  const was = (prop: (typeof SETUP_FIELDS)[number]) =>
+    changes.fields[prop] ? `Original: ${changes.original[prop]}` : undefined;
+  const scalar = (field: ScalarField, label: string, min: number, max: number, step = 1) => (
+    <label class="silk" title={was(SCALAR_PROP[field])}>
+      {changes.fields[SCALAR_PROP[field]] && <span class="edit-mark" />}
       {label}
       <NumberField
         class="led"
         label={label}
-        value={value}
+        value={preset[SCALAR_PROP[field]]}
         min={min}
         max={max}
         step={step}
@@ -157,7 +224,8 @@ export function SetupPage({ preset, dispatch }: { preset: Preset; dispatch: Disp
   );
   return (
     <div class="setup-grid">
-      <label class="silk">
+      <label class="silk" title={was('name')}>
+        {changes.fields.name && <span class="edit-mark" />}
         Name
         <input
           class="led"
@@ -173,12 +241,12 @@ export function SetupPage({ preset, dispatch }: { preset: Preset; dispatch: Disp
           }}
         />
       </label>
-      {scalar('blinks', 'Blinks', preset.blinks, 1, 20)}
-      {scalar('led_on_ms', 'LED on ms', preset.ledOnMs, 0, 60000, 10)}
-      {scalar('led_off_ms', 'LED off ms', preset.ledOffMs, 0, 60000, 10)}
-      {scalar('led_pause_ms', 'LED pause ms', preset.ledPauseMs, 0, 60000, 10)}
-      {scalar('default_delay_lines', 'Default lines', preset.defaultDelayLines, 1, Math.min(TOTAL_LINE_COUNT, preset.maxDelayLines))}
-      {scalar('max_delay_lines', 'Max lines', preset.maxDelayLines, Math.max(1, preset.defaultDelayLines), TOTAL_LINE_COUNT)}
+      {scalar('blinks', 'Blinks', 1, 20)}
+      {scalar('led_on_ms', 'LED on ms', 0, 60000, 10)}
+      {scalar('led_off_ms', 'LED off ms', 0, 60000, 10)}
+      {scalar('led_pause_ms', 'LED pause ms', 0, 60000, 10)}
+      {scalar('default_delay_lines', 'Default lines', 1, Math.min(TOTAL_LINE_COUNT, preset.maxDelayLines))}
+      {scalar('max_delay_lines', 'Max lines', Math.max(1, preset.defaultDelayLines), TOTAL_LINE_COUNT)}
     </div>
   );
 }

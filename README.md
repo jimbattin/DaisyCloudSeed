@@ -152,7 +152,12 @@ npm test             # unit tests
   sounds saved on it. Firefox asks for MIDI permission on the first CONNECT.
 - Program keys 01-16 select a preset. **DUP** appends a copy at the end, and **DEL** removes
   one; there is no reordering. The page keys show faders with the engine's real units, the
-  knob and toggle maps, and the name, LED and delay-line settings.
+  knob and toggle maps, and the name, LED and delay-line settings. On the KNOBS and SWITCH
+  pages each control has an ivory **A** row (primary, normal playing) and a dark **B** row
+  (secondary, while FS2 is held).
+- An amber dot marks anything changed since the bank was loaded or last saved: the value
+  itself, its page key, and its program key. A ring on a program key marks a preset added
+  with DUP. Hovering a changed value shows its original.
 - Edits change only the edited value in the text: an unedited bank saves byte-identically,
   so its hash matches the pedal's. SAVE and UPLOAD first check the bank with the same rules
   as `make presets-check`, with the same messages.

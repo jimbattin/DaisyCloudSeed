@@ -21,8 +21,13 @@ describe('App', () => {
     expect(labels).toEqual(['DRY', 'PREDLY', 'EARLY', 'MAIN']);
 
     expect(screen.queryByText(/EDITED/)).toBeNull();
+    expect(container.querySelector('.edit-mark')).toBeNull();
     fireEvent.input(screen.getByRole('slider', { name: 'DRY' }), { target: { value: '0.5' } });
     expect(screen.getByText(/EDITED/)).toBeTruthy();
+    // The DRY strip, the OUTPUT page key and program key 01 are marked; nothing else.
+    const marked = [...container.querySelectorAll('.edit-mark')].map((m) => m.parentElement!.textContent);
+    expect(marked).toEqual(['01', 'OUTPUT', expect.stringContaining('DRY')]);
+    expect(screen.getByRole('slider', { name: 'DRY' }).title).toMatch(/\nOriginal: (-INF|-?\d+\.\ddB) \([\d.]+\)$/);
   });
 
   it('reports a browser without Web MIDI', () => {
