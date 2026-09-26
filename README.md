@@ -30,12 +30,13 @@ This fork extends those capabilities and adds a few extras:
   the firmware image and parsed at boot; edit values there and reflash
 - Preset upload over USB: the Seed's USB port is a USB-MIDI device, so a web page can
   upload a new presets.toml, read the active one back, or revert to the built-in bank without
-  reflashing ([docs/USB_MIDI.md](docs/USB_MIDI.md))
+  reflashing ([docs/USB_MIDI.md](docs/USB_MIDI.md)); the [editor/](editor/) web app does this and
+  edits every preset field (see "Preset editor (browser)")
 
 # DaisyCloudSeed (GuitarML fork for Terrarium)
 Cloud Seed is an open source algorithmic reverb plugin under the MIT license, which can be found at [ValdemarOrn/CloudSeed](https://github.com/ValdemarOrn/CloudSeed).
 DaisyCloudSeed is a port to the Daisy environment for running on a Daisy Patch unit. This code (GuitarML's fork) further modifies DaisyCloudSeed
-for use on the Terrarium guitar pedal. The processing has been changed to mono (from stereo), which allows up to 5 delay lines,
+for use on the Terrarium guitar pedal. The processing has been changed to mono (from stereo), which allows up to 4 delay lines (5 in this fork),
 and fills out all of the Terrarium's controls. 
 
 ![Pedal Picture](docs/pedal.png)
@@ -100,8 +101,10 @@ make program-dfu
 ```
 `make` runs the file through the same parser the pedal uses and refuses to build firmware if it
 fails: a non-ASCII character anywhere (the file must be plain ASCII, comments included),
-unknown or misplaced parameters, a missing group, an unknown preset or top-level key, a
-bad range, TOML syntax errors, or a document too large for the boot-time parse arena. So a
+unknown or misplaced parameters, a missing group, an unknown preset or top-level key, an
+invalid knob_map/toggle_map target, a `LineCount` key, bad delay-line counts, a name over
+31 bytes, more than 16 presets, a bad range, TOML syntax errors, or a document too large for the
+boot-time parse arena. So a
 broken preset file can no longer reach the pedal - where the only symptom would be **both**
 LEDs blinking together at 5 Hz with no audio.
 
@@ -147,8 +150,9 @@ npm test             # unit tests
 - **PROJECT** loads the repo's presets.toml, **OPEN** loads any `.toml` file, and **SAVE**
   downloads the bank. Where the file lands is set by the browser's download setting ("ask where
   to save" lets you overwrite presets.toml).
-- **CONNECT** / **READ** read the pedal's active bank. **UPLOAD** sends the edited bank and
-  **REVERT** returns the pedal to its built-in bank. Both reboot the pedal and erase the
+- **CONNECT** shows the pedal's active bank (source, preset count, length, hash, and whether
+  it matches the loaded bank); **READ** loads it into the editor. **UPLOAD** sends the edited
+  bank and **REVERT** returns the pedal to its built-in bank. Both reboot the pedal and erase the
   sounds saved on it. Firefox asks for MIDI permission on the first CONNECT.
 - Program keys 01-16 select a preset. **DUP** appends a copy at the end, and **DEL** removes
   one; there is no reordering. The page keys show faders with the engine's real units, the
@@ -166,11 +170,13 @@ npm test             # unit tests
   stages are outlined; hovering a fader or map row lights its exact stage, and clicking a stage
   opens its page. The panel below the diagram explains the focused stage and what each of its
   parameters does. The **FLOW** key collapses it, and the browser remembers that.
-- Edits change only the edited value in the text: an unedited bank saves byte-identically,
+- Edits change only the edited value in the text (an LED timing the preset omits is added as
+  a new line): an unedited bank saves byte-identically,
   so its hash matches the pedal's. SAVE and UPLOAD first check the bank with the same rules
   as `make presets-check`, with the same messages.
-- If the pedal does not come back after an upload or revert, the panel shows `... PRESS
-  CONNECT TO VERIFY`. The bank is already stored. If CONNECT then reports `pedal not found`,
+- If the pedal does not come back after an upload or revert, the main display shows
+  `UPLOADED - PRESS CONNECT TO VERIFY` (or `REVERTED - ...`). The bank is already stored. If
+  CONNECT then reports `pedal not found`,
   reload the page, or re-plug the pedal if its USB name came back garbled (see
   `/proc/asound/cards`).
 
@@ -185,7 +191,9 @@ is never modified by saving on the pedal.
   affected. Both LEDs blink 3 times quickly to confirm, and releasing FS 1 does not toggle
   bypass.
 - **Restore factory**: hold FS 1 and FS 2 together for 5 s. They need not go down or come up at
-  exactly the same moment. The current preset reverts to its presets.toml values right away,
+  exactly the same moment. The current preset reverts to its values in the active bank
+  (presets.toml, or the bank
+  uploaded over USB) right away,
   and its saved version is erased. Both LEDs blink 3 times; no bypass toggle or preset change
   happens on release.
 
@@ -228,8 +236,9 @@ dialled in the secondary bank is parked when you release the footswitches; its n
 its primary target to the knob's position.
 
 Holding FS 2 is a gesture, not a tap: the bank stays on the secondary map until FS 2 is
-released. If any secondary knob changed a parameter during the hold, the release does nothing;
-if none did, the release cycles to the next preset as a tap would. A knob brushed by less than
+released. If any secondary knob or toggle changed a parameter during the hold, or FS 1 was pressed
+during it, the release does nothing; otherwise the release cycles to the next preset as a tap
+would. A knob brushed by less than
 1% of its travel does not count.
 
 `input.HighPass` and `input.LowPass` switch their filter on the first time their knob is
@@ -304,9 +313,9 @@ cancels the preset change on the FS 2 release.
 | SW 4 | Reverse Routing (default target `reverse.direct_mix`) | Chooses where the reverse goes. Off = into the reverb (the reversed guitar feeds the wet tail; the forward dry pass-through stays clean via dry-gain cancellation). On = direct mix (a reversed copy of the reverb output is mixed straight into the output). Only audible when the reverse voice is on. |
 | FS 1 | Bypass/Active | Bypass / effect engaged. Acts on **release**. A release after a 5 s hold, or while FS 2 is (or was, during the same press) held, does not toggle bypass. |
 | FS 1 (held 5 s) | Save preset | Stores the current sound into the current preset (survives power cycles; see "Saving and restoring presets"). Both LEDs blink 3× to confirm. |
-| FS 1 + FS 2 (held 5 s) | Restore factory preset | Reverts the current preset to its presets.toml values and erases its saved version. Both LEDs blink 3× to confirm. |
+| FS 1 + FS 2 (held 5 s) | Restore factory preset | Reverts the current preset to its values in the active bank (presets.toml or the uploaded bank) and erases its saved version. Both LEDs blink 3× to confirm. |
 | FS 2 | Cycle Preset | Tap: loads the next available Preset, starts at beginning after the last in the list. Acts on **release**. Presets 1-9 are derived from the original Cloud Seed plugin presets ("Through the Looking Glass" capped at 4 delay lines); "Dark Plate" is adapted from Ghost Note Audio's CloudSeedCore |
-| FS 2 (held) | Secondary knob and toggle bank | While held, every knob controls its `knobN_b` target instead of `knobN_a`, and a toggle flip writes its `toggleN_b` target. The release skips the preset change if a secondary knob was turned or a toggle flipped during the hold, or if FS 1 was also pressed. |
+| FS 2 (held) | Secondary knob and toggle bank | While held, every knob controls its `knobN_b` target instead of `knobN_a`, and a toggle flip writes its `toggleN_b` target. The release skips the preset change if a secondary knob was turned (by at least 1% of its travel) or a toggle flipped during the hold, or if FS 1 was also pressed. |
 | LED 1 | Bypass/Active Indicator |Illuminated when effect is set to Active. Blinks 3× with LED 2 to confirm a save or restore. |
 | LED 2 | Preset indicator | Number of flashes = current preset number; off while bypassed. Blinks 3× with LED 1 to confirm a save or restore. |
 | Audio In 1 | Audio input | Mono only for Terrarium |

@@ -36,7 +36,7 @@ DaisyCloudSeed/
 │   ├── preset_bank.h          # PresetBank/PresetData types + knob/toggle-map types + ParsePresetBank()
 │   ├── preset_bank.cpp        # TOML -> PresetBank parser (host-portable, no libdaisy)
 │   └── presets_toml.s         # .incbin that embeds presets.toml into the firmware image
-├── tests/                 # Host unit tests (`make test`)
+├── tests/                 # Firmware host unit tests (`make test`; the editor's are in editor/src)
 │   ├── check.h                # Minimal CHECK() macro + summary
 │   ├── knob_bank_test.cpp
 │   ├── toggle_bank_test.cpp
@@ -56,8 +56,11 @@ DaisyCloudSeed/
 ├── tools/                 # preset_check.cpp (host-side presets.toml validator),
 │                          # usb_preset_host.py (Linux USB-MIDI test host for docs/HARDWARE_TESTS.md)
 ├── editor/                # Browser preset editor (Preact + Vite, Web MIDI; Node >= 22.12):
-│                          # src/midi/ protocol v1 client, src/model/ bank text model +
-│                          # validator mirroring src/preset_bank.cpp, src/components/ LARC UI
+│                          # src/midi/ protocol v1 client + Web MIDI transport; src/model/ bank
+│                          # text model + validator mirroring src/preset_bank.cpp, schema,
+│                          # real-unit scaling, signal-flow model, editor state; src/components/
+│                          # + src/styles/larc.css LARC UI; src/io/ file open/save;
+│                          # *.test.ts(x) Vitest suites (`npm test`); dist/ is build output
 ├── CLAUDE.md              # This file - agent-facing project documentation
 ├── README.md              # User-facing control table and build/flash instructions
 ├── license.txt            # License
@@ -68,7 +71,8 @@ DaisyCloudSeed/
 
 ### Daisy Seed Specifications
 - **MCU**: STM32H750 (Cortex-M7, 480MHz)
-- **RAM**: 512KB internal SRAM
+- **RAM**: 512KB AXI SRAM (the BOOT_SRAM app region, 480KB usable) plus 128KB DTCM, 64KB ITCM,
+  288KB D2 and 64KB D3
 - **SDRAM**: 64MB external (48MB allocated to CloudSeed)
 - **Flash**: 8MB QSPI
 - **FPU**: Hard float, double precision
@@ -112,9 +116,10 @@ CloudSeed is based on the open-source CloudSeed VST plugin by ValdemarOrn, modif
 - 48MB SDRAM buffer allocation
 - Preset and bypass state persisted to QSPI flash
 - Per-preset user save (FS1 held 5 s) and factory restore (FS1 + FS2 held 5 s), stored in QSPI
-  and discarded when a different firmware image is flashed
+  and discarded when the firmware image or the active preset bank changes (a reflash, a USB
+  upload, or a revert)
 - Presets can be uploaded, read back, and reverted over USB-MIDI SysEx from a browser
-  (docs/USB_MIDI.md); the pedal enumerates as a class-compliant USB-MIDI device at every boot
+  (the editor/ web app; protocol in docs/USB_MIDI.md); the pedal enumerates as a class-compliant USB-MIDI device at every boot
 - Equal-power makeup gain on the wet path
 - FPU flush-to-zero enabled at boot (denormal stall elimination)
 
@@ -153,7 +158,7 @@ FOOTSWITCH_1 held 5 s: save the current engine state into the current preset (fi
 FOOTSWITCH_2 tap: Preset cycle on RELEASE
 FOOTSWITCH_2 held: secondary knob and toggle bank; the release cycles the preset only if no
           secondary knob or toggle wrote a value during the hold
-FOOTSWITCH_1 + FOOTSWITCH_2 held 5 s: restore the current preset to its presets.toml values
+FOOTSWITCH_1 + FOOTSWITCH_2 held 5 s: restore the current preset to its active-bank values
           (fires while held). Once both have been down together neither release toggles
           bypass or cycles the preset (FootswitchGestures, src/footswitch_gestures.h)
 ```
@@ -397,7 +402,7 @@ struct Settings {
    `state.currentPreset` in the main loop; the audio callback flips `state.bypass`
    (`src/cloudseed.cpp:328-331`)
 3. **In main loop**: `gStorage.ServiceSettingsSave(state.currentPreset, state.bypass)`
-   (`src/pedal_storage.cpp:112-125`, called on every pass at `src/cloudseed.cpp:683`) mirrors
+   (`src/pedal_storage.cpp:107-120`, called on every pass at `src/cloudseed.cpp:683`) mirrors
    both values into the RAM copy and restarts a `SETTINGS_SAVE_DELAY_MS` timer whenever they
    differ. Once 3 s pass without another change it saves the `Settings` store, outside the
    audio callback. A burst of preset/bypass changes therefore costs one QSPI sector erase, and
@@ -420,9 +425,10 @@ struct Settings {
 ### User preset save / factory restore
 
 A sound can be saved into the current preset on the pedal and later reverted to its
-presets.toml version. Saved edits survive power cycles but not a firmware change.
+version in the active bank. Saved edits survive power cycles but not a change of firmware
+image or active bank.
 
-**Storage** (`src/pedal_storage.cpp:11-13`, `src/pedal_storage.h:10-11`, `:31-54`, `:74-97`):
+**Storage** (`src/pedal_storage.cpp:11-13`, `src/pedal_storage.h:11-12`, `:31-54`, `:58-102`):
 `PedalStorage`'s `PersistentStorage<UserPresets>` sits at QSPI offset `USER_PRESETS_QSPI_OFFSET` (0x1000). That is the 4 KB sector
 after `Settings`, which sits at offset 0 in sector 0. The Daisy bootloader keeps programs at
 0x90040000 and never touches the first 256 KB
@@ -572,12 +578,16 @@ with the firmware:
   descriptor from one shared static buffer, `USBD_StrDesc` (`libdaisy/src/usbd/usbd_desc.c:289`)
 - `editor/src/model/bank.ts` `loadBank()` re-implements `ParsePresetBankText()` with the
   exact messages. Its tests port `kRejects` / `kAccepts` from `tests/preset_bank_test.cpp`
-  verbatim, so a new parser rule or message needs the same change there. Edits patch only the
-  value token of one line, so an unedited bank round-trips byte-identically (same FNV-1a as
+  verbatim, so a new parser rule or message needs the same change there. Field edits patch only the
+  value token of one line (an absent optional LED timing is inserted after `blinks`;
+  duplicate/delete copy or remove whole preset blocks), so an unedited bank round-trips byte-identically (same FNV-1a as
   the pedal)
 - `editor/src/model/schema.ts` mirrors `kGroups`, `kToggleParams` and the presets.toml
   parameter reference. `editor/src/model/scale.ts` ports `GetScaledParameter` and
   `ValueTables` for display only
+- `editor/src/model/bank.ts` hard-codes `TOTAL_LINE_COUNT = 5` and `schema.ts` copies the
+  knob/toggle target lists, so a TotalLineCount change or a new pseudo-target needs them too
+  (see "Common Modifications" 1 and 4)
 - `editor/src/model/flow.ts` (drawn by `editor/src/components/FlowPanel.tsx`) models the signal
   path of `ReverbChannel::Process()` / `UpdateLines()`, `DelayLine::Process()` (slot order by
   `LateStageTap`; shelves and cutoff in the feedback path only) and the two reverse render
@@ -656,7 +666,7 @@ embedded presets.toml.
   constructor no longer loads any preset - `main()` parses presets.toml and calls `LoadPreset()`
   before audio starts
 - Single channel: `channelR` and all right-channel buffers are commented out
-  (`CloudSeed/ReverbController.h:27`, `:37`, `:72`, `:173`, `:181`, `:194`, `:198`, `:200`, `:206`)
+  (`CloudSeed/ReverbController.h:27`, `:29`, `:31`, `:37`, `:72`, `:173`, `:181`, `:194`, `:198`, `:200`, `:206`)
 - Fixed internal block size `static const int bufferSize = 48` (`CloudSeed/ReverbController.h:23`),
   backing fixed-size member arrays (`:28-32`)
 - Public API: `LoadPreset(const float*)` `:47`, `SetParameter(Parameter, float)` `:167`,
@@ -672,7 +682,7 @@ embedded presets.toml.
 - Contains delay lines, diffusers, modulation
 
 **DelayLine** ([CloudSeed/DelayLine.h](CloudSeed/DelayLine.h)):
-- Core delay buffer implementation (255 lines)
+- Core delay buffer implementation (263 lines)
 - The delay buffer itself is SDRAM-pool-backed (placement-new into `custom_pool_allocate`,
   `CloudSeed/ModulatedDelay.h:41-42`)
 - `tempBuffer`, `mixedBuffer`, and `filterOutputBuffer` are real heap allocations
@@ -713,7 +723,7 @@ Then `make libs` once (and after every submodule update), then `make`.
 
 ```bash
 # Rebuild all libraries (libcloudseed, DaisySP, libdaisy).
-# Makefile:113-116 runs `clean all` in each, so this is a full rebuild of all three.
+# Makefile:125-128 runs `clean all` in each, so this is a full rebuild of all three.
 make libs
 
 # Or build individually:
@@ -794,14 +804,15 @@ exits non-zero on any failed `CHECK()` ([tests/check.h](tests/check.h)):
 - `preset_bank_test tests/fixtures/two_presets.toml` - `ParsePresetBank()` on a two-preset
   fixture (Chorus + Through the Looking Glass), then a table of single-line mutations that
   must each be rejected with a specific message (non-ASCII bytes in a value and in a comment
-  among them), a check of the line and column reported for a non-ASCII byte, and two
-  mutations that must be accepted. `ParsePresetBankText()` is checked to parse exactly
+  among them), a check of the line and column reported for a non-ASCII byte, two
+  mutations that must be accepted, a float `led_on_ms = 300.0` that must be honoured, and a
+  31-byte name that must be kept whole. `ParsePresetBankText()` is checked to parse exactly
   `length` bytes of text with no NUL terminator, to leave its source untouched, to release
   every allocation on success and on failure, and to reject empty text, embedded NUL bytes,
   and a failed scratch allocation
 - `engine_alloc_test` - the whole CloudSeed library compiled for the host, with counting
   replacements for `operator new` and `custom_pool_allocate`: after boot, every parameter is
-  swept 0 → 1 → 0.5 through `SetParameter()` with a `Process()` block after each write, and
+  swept 0 → 0.25 → 0.5 → 0.75 → 1 → 0.5 through `SetParameter()` with a `Process()` block after each write, and
   must cause zero heap and zero pool allocations (see "Performance Architecture")
 - `preset_protocol_test tests/fixtures/two_presets.toml` - `SysExAssembler` framing (split
   frames, real-time bytes, overflow, aborted, empty and restarted frames), `PackSysExUsbMidi()`
@@ -814,6 +825,12 @@ exits non-zero on any failed `CHECK()` ([tests/check.h](tests/check.h)):
   real parser, and checks that a rejected bank's COMMIT reply carries the parser's own message
 - `stored_bank_test` - `ValidStoredBankText()`: erased flash, wrong magic, a different firmware
   image, corrupted text or hash, and the 1..`kMaxTextBytes` length bounds
+
+The browser editor has its own Vitest suite, which `make test` does not run:
+`cd editor && npm test` (App, FlowPanel, Fader, flow, state, bank, scale, client, protocol).
+It uses the same tests/fixtures/two_presets.toml, and `bank.test.ts` ports `kRejects` /
+`kAccepts` from `tests/preset_bank_test.cpp`. It also reads the live presets.toml and expects
+exactly 10 presets, so adding or removing a preset fails `npm test` (not `make test`).
 
 The parser test deliberately uses its own fixture, not presets.toml, so editing preset values
 never breaks `make test`; the live file stays covered by `make presets-check` and the build
@@ -846,7 +863,7 @@ at v8.1.0, `libdaisy/core/Makefile:220`); a pedal still running an older bootloa
 but misses its fixes (v6.3+ carries libdaisy's QSPI write-protect fix), so re-run it after a
 libdaisy bump that ships a new one. A `BOOT_SRAM` build cannot be flashed with `make program`
 (openocd) - libdaisy errors out on that path (`libdaisy/core/Makefile:340-341`). Same procedure
-as `README.md:72-83`.
+as `README.md:77-88`.
 
 ### Compiler Configuration
 
@@ -888,7 +905,8 @@ knob is moved, so the filter is audible even in presets that ship with it off; t
 glide starts from the open filter (`knobTargetValue()`), so enabling it does not step the tone.
 `HighPass` gets the same treatment via `HiPassEnabled`; no other gated parameter does - for the
 shelves, the in-loop cutoff, and the diffusers, set the matching `*Enabled` value in
-`[preset.params.*]`. Either owned by a toggle target instead (see below), in which case
+`[preset.params.*]`. Either filter's enable can instead be owned by a toggle target (see
+below), in which case
 `applyKnobTarget()` leaves the enable alone and the knob only moves the cutoff.
 
 `applyKnobTarget()` is also where the output-level cache is invalidated: its `switch` sets
@@ -899,7 +917,8 @@ dry-cancellation scale will stay at their old values.
 **Adding a non-parameter knob target** (like `reverse.delay`) requires C++: a new
 `KnobTargetKind` in [src/preset_bank.h](src/preset_bank.h), a branch in `parseKnobTarget()`
 ([src/preset_bank.cpp](src/preset_bank.cpp)), and a branch in `applyKnobTarget()`
-(`src/cloudseed.cpp:229-262`).
+(`src/cloudseed.cpp:229-262`), plus the matching branch in `parseKnobTarget()` in
+editor/src/model/bank.ts and the `KNOB_TARGETS` entry in editor/src/model/schema.ts.
 
 **Example**: reassign SWITCH_2 (Bloom by default) to enable the late low-pass instead - edit
 that preset's `[preset.toggle_map]`:
@@ -922,7 +941,8 @@ rejected with `'Name' is not an on/off parameter`: a lever would slam it to 0 or
 **Adding a non-parameter toggle target** (like `delay_lines.max`) requires C++: a new
 `ToggleTargetKind` in [src/preset_bank.h](src/preset_bank.h), a branch in `parseToggleTarget()`
 ([src/preset_bank.cpp](src/preset_bank.cpp)), and a branch in `applyToggleTarget()`
-(`src/cloudseed.cpp:266-281`).
+(`src/cloudseed.cpp:266-281`), plus `parseToggleTarget()` in editor/src/model/bank.ts and
+`TOGGLE_TARGETS` in editor/src/model/schema.ts.
 
 ### 2. Modifying Parameter Ranges
 
@@ -1030,7 +1050,7 @@ ever flashed it would stop boot and blink both LEDs):
 - All eight `[preset.params.*]` parameter groups must be present, each containing exactly its
   own keys - 46 parameters total. Group membership is defined by `kGroups` in
   [src/preset_bank.cpp](src/preset_bank.cpp) and mirrored by the reference comment at the top of
-  presets.toml
+  presets.toml and by `GROUPS` / `TOGGLE_PARAMS` in editor/src/model/schema.ts
 - `[preset.params.reverse]` must be present with exactly `delay`, `enabled` and `direct_mix`,
   each a number 0..1 (`missing [preset.params.reverse]`, `missing or non-numeric
   'reverse.delay'`, `'reverse.delay' = V out of range 0..1`,
@@ -1098,8 +1118,9 @@ everything that depends on it follows automatically:
 
 After lowering it, `make` fails until every preset's `default_delay_lines` / `max_delay_lines`
 fits (nine ship `max_delay_lines = 5.0`). Also update the `1..5` wording in presets.toml's
-header, this file and README.md, and the expected `1..5` messages and 5.0 values in
-`tests/preset_bank_test.cpp` / `tests/fixtures/two_presets.toml`. Raising it costs SDRAM pool
+header and this file, the "up to 5" delay-line wording in README.md, the expected `1..5`
+messages and 5.0 values in `tests/preset_bank_test.cpp` / `tests/fixtures/two_presets.toml` /
+`editor/src/model/bank.test.ts`, and `TOTAL_LINE_COUNT` in `editor/src/model/bank.ts`. Raising it costs SDRAM pool
 memory and CPU per line ("Through the Looking Glass" already crackles above 4).
 
 ### 5. Modifying Switch Behavior
@@ -1125,7 +1146,8 @@ To change what a switch does without touching presets.toml (e.g. a completely di
 for every preset, or a fifth pseudo-target), add a case to `ToggleTargetKind`
 ([src/preset_bank.h](src/preset_bank.h)), a branch in `parseToggleTarget()`
 ([src/preset_bank.cpp](src/preset_bank.cpp)), and a branch in `applyToggleTarget()`
-(`src/cloudseed.cpp:266-281`); see "1. Changing Control Mappings" above.
+(`src/cloudseed.cpp:266-281`), plus the editor's `parseToggleTarget()` / `TOGGLE_TARGETS`; see
+"1. Changing Control Mappings" above.
 
 `hw.switches[...].Pressed()` — an 'ON' toggle counts as pressed
 (`src/cloudseed.cpp:471-473`) — is read for every toggle, not `.Read()`.
@@ -1203,9 +1225,10 @@ per-call lookup function. Both functions only `Set()` LED2; the audio callback's
 **Behavior**:
 - Blinks continuously when pedal is active (not bypassed)
 - Turns off completely when bypassed
-- Blinks N times where N = preset number (1-10)
-- 150ms on, 150ms off per blink
-- 5 second pause between sequences
+- Blinks N times where N = the preset's `blinks` value (1-20; the preset number in the
+  shipped presets.toml)
+- `led_on_ms` on, `led_off_ms` off per blink (150 / 150, the default and the shipped value)
+- `led_pause_ms` pause between sequences (5000 ms, the default and the shipped value)
 - Automatically restarts sequence after pause
 - Save / restore confirmation: `ServiceConfirmBlink()` takes over LED1 and LED2 for 3 × 80 ms
   on/off (even when bypassed) and `ServicePresetBlink()` is skipped until it finishes; LED2 then
@@ -1218,18 +1241,22 @@ per-call lookup function. Both functions only `Set()` LED2; the audio callback's
 ### Key Files for Modification
 
 **Most Common**:
-- [presets.toml](presets.toml) - all preset data **and the knob map** (parsed at boot;
+- [presets.toml](presets.toml) - all preset data **and the knob and toggle maps** (parsed at boot;
   validated by `make`)
 - [src/cloudseed.cpp](src/cloudseed.cpp) - `main()`, pedal state, audio callback, knob/toggle dispatch, preset load
 - [src/knob_bank.h](src/knob_bank.h) - absolute, parked knob take-over state machine (park, 50 ms glide, track)
+- [src/toggle_bank.h](src/toggle_bank.h) - parked toggle take-over state machine (no glide)
 - [src/footswitch_gestures.h](src/footswitch_gestures.h) - FS1/FS2 gesture state machine: taps, FS2 hold (secondary bank), FS1 5 s save, FS1 + FS2 5 s restore
 - [src/pedal_leds.cpp](src/pedal_leds.cpp) - LED1/LED2: preset blink, save/restore confirmation, `FatalErrorLoop()`
-- [src/pedal_storage.cpp](src/pedal_storage.cpp) - QSPI `Settings` and `UserPresets` (`PedalStorage`), firmware hash
+- [src/pedal_storage.cpp](src/pedal_storage.cpp) - QSPI `Settings`, `UserPresets` and the uploaded preset bank (`PedalStorage`), firmware + bank identity hash
 
 **Advanced**:
 - [src/preset_bank.cpp](src/preset_bank.cpp) - TOML schema, group membership, and validation errors
-- [src/sdram_pool.cpp](src/sdram_pool.cpp) - `custom_pool_allocate()` SDRAM pool and the boot TOML parse arena
+- [src/sdram_pool.cpp](src/sdram_pool.cpp) - `custom_pool_allocate()` SDRAM pool and the TOML parse arena (boot parse and USB-upload validation)
 - [tests/](tests/) - host unit tests (`make test`)
+- [src/preset_protocol.h](src/preset_protocol.h) / [src/usb_midi_link.cpp](src/usb_midi_link.cpp) - USB-MIDI SysEx preset upload protocol and link
+- [src/stored_bank.h](src/stored_bank.h) - uploaded-bank QSPI layout + `ValidStoredBankText()`
+- [editor/](editor/) - browser preset editor; `editor/src/model/bank.ts` and `schema.ts` mirror src/preset_bank.cpp and must change with it
 - [CloudSeed/ReverbController.h](CloudSeed/ReverbController.h) - `LoadPreset`, parameter scaling
 - [CloudSeed/Parameter.h](CloudSeed/Parameter.h) - All available reverb parameters
 - [CloudSeed/ReverbChannel.h](CloudSeed/ReverbChannel.h) - Core reverb architecture
@@ -1372,8 +1399,9 @@ the input is passed through (`src/cloudseed.cpp:463-466`).
   - Preset switching (includes buffer clearing)
   - Flash memory writes (settings, user preset save/restore)
   - USB preset link service (`serviceUsbPresetLink()`): services one SysEx frame per pass, and
-    performs the COMMIT/REVERT QSPI writes (blocking, up to ~3 s) while the callback's
-    passthrough gate is held closed
+    performs the COMMIT validation parse and QSPI write (blocking; hosts allow up to 10 s for
+    the reply) while the callback's passthrough gate is held closed, and the REVERT one-sector
+    erase (REVERT needs no session, so the gate is normally open during it)
   - LED blink state machine and save/restore confirmation blink
 - **FPU flush-to-zero** is enabled once at the top of `main()` before `hw.Init()`
   (`src/cloudseed.cpp:573`) — see [docs/PERFORMANCE.md](docs/PERFORMANCE.md) §1
@@ -1484,13 +1512,14 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
   embedded `presets.toml` blob is 49,116 B (`build/presets_toml.o` - it carries the
   per-preset `[preset.knob_map]`, `[preset.toggle_map]`, `[preset.params.reverse]` and
   `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 8,285 B
-- DTCMRAM: 45,420 B of 128KB (34.65%) — up from 30,284 B; the added 15,136 B is libdaisy's USB
-  device stack, pulled in by `UsbMidiLink`: the four 2 KB `UserRxBufferFS`/`UserTxBufferFS`/
+- DTCMRAM: 45,420 B of 128KB (34.65%) — up from 30,284 B; most of the added 15,136 B is libdaisy's
+  USB device stack, pulled in by `UsbMidiLink`: the four 2 KB `UserRxBufferFS`/`UserTxBufferFS`/
   `UserRxBufferHS`/`UserTxBufferHS` ring buffers, `midi_usb_handle` (2,112 B),
-  `hpcd_USB_OTG_FS` (1,292 B) and the two 732 B `hUsbDeviceFS`/`hUsbDeviceHS` descriptors, plus
+  `hpcd_USB_OTG_FS` / `hpcd_USB_OTG_HS` (1,292 B each), the two 732 B `hUsbDeviceFS`/`hUsbDeviceHS`
+  descriptors and `USBD_StrDesc` (512 B), plus
   `gMidiLink` (616 B) and `gPresetProtocol` (312 B). Also includes the 4,804 B `gPresets` bank
   (40 B of that per preset slot is the knob + toggle maps: 24 B knobs, 16 B toggles), the
-  6,720 B `gStorage` (6,676 B of it is the user-preset `PersistentStorage`, which keeps a
+  6,732 B `gStorage` (6,676 B of it is the user-preset `PersistentStorage`, which keeps a
   defaults copy and a live copy of the 3,332 B `UserPresets`), and the 208 B `gSaveSnapshot`
 - RAM_D2_DMA: 17,956 B of 32KB (54.80%) — up from 16,968 B, the `MidiUsbTransport` rx/tx buffers
 - QSPI: `Settings` in sector 0 (offset 0), `UserPresets` in sector 1 (offset 0x1000), and the
@@ -1503,10 +1532,10 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
 ### Optimization Tips
 
 See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the concrete list of performance/correctness
-fixes applied to the CloudSeed DSP (FPU denormal handling, parameter storage, hot-loop
-modulo/precision fixes, placement-new/delete destructor safety, build flags, the redundant
-bypass copy, allocation-free parameter updates, and engine state defined before its first
-read), each with the exact file/line and pattern it addresses.
+fixes applied to the CloudSeed DSP (FPU denormal handling, parameter storage, the cached
+per-line gain, hot-loop modulo/precision fixes, placement-new/delete destructor safety, build flags, the redundant
+bypass copy, allocation-free parameter updates, engine state defined before its first
+read, and the idle-free USB-MIDI preset link), each with the exact file/line and pattern it addresses.
 
 ## Further Resources
 
@@ -1539,11 +1568,11 @@ The trade-off: More delay lines in mono = richer reverb tail.
 
 Key changes in this fork:
 1. Adapted for Terrarium hardware (mono, 6 knobs, 4 switches)
-2. Increased delay line count from 2 to 5
+2. Increased delay line count from 2 (Daisy Patch) to 4 (GuitarML) and then 5 (this fork)
 3. Added preset cycling via footswitch
 4. Simplified control scheme for guitar pedal use
 5. Added delay line switching via toggle switches
-6. **Bypass state persisted to flash** alongside the preset (`SETTINGS_VERSION = 2`, `src/pedal_storage.h:15-29`)
+6. **Bypass state persisted to flash** alongside the preset (`SETTINGS_VERSION = 2`, `src/pedal_storage.cpp:5`; `Settings` at `src/pedal_storage.h:15-29`)
 7. **Persistent preset storage** in QSPI flash memory with version control
 8. **LED2 blink pattern system** for visual preset indication
 9. **TOML-defined presets**: all preset data lives in [presets.toml](presets.toml), embedded in
@@ -1591,9 +1620,10 @@ Key changes in this fork:
     on/off state, the line counts always come from presets.toml) and the reverse window into the
     current preset's slot of a QSPI
     `UserPresets` store (offset 0x1000); FOOTSWITCH_1 + FOOTSWITCH_2 held 5 s clears the slot
-    and reloads the presets.toml values. Both are confirmed by LED1 + LED2 blinking 3 × 80 ms.
-    The store is stamped with a hash of the firmware image and discarded when it differs, so
-    saved edits never outlive the firmware that wrote them (see "User preset save / factory
+    and reloads the active bank's values. Both are confirmed by LED1 + LED2 blinking 3 × 80 ms.
+    The store is stamped with `identity` (the firmware image hash mixed with the active bank's
+    hash) and discarded when it differs, so saved edits never outlive the firmware or preset
+    bank that wrote them (see "User preset save / factory
     restore")
 21. **Per-preset toggle mapping** (`[preset.toggle_map]` in presets.toml): every switch has a
     primary and a secondary target, the secondary bank shared with the knobs (held preset
@@ -1612,8 +1642,11 @@ Key changes in this fork:
     [docs/USB_MIDI.md](docs/USB_MIDI.md)). An upload is validated with the firmware's own parser
     before anything reaches flash, is stored in QSPI (`PedalStorage::WriteStoredBank()`), and a
     successful commit or revert reboots the pedal. Uploading, reverting, or reflashing all wipe
-    saved user presets, because all three change the bank-hash half of the user-preset
-    `identity` (see "Firmware + bank identity" under "User preset save / factory restore")
+    saved user presets, because each changes one of the two hashes (firmware image, active
+    bank text) that make up the user-preset `identity` (see "Firmware + bank identity" under "User preset save / factory restore")
+23. **Browser preset editor** ([editor/](editor/)): a Preact + Vite Web MIDI app that edits every
+    preset field, shows the signal flow, and uploads, reads back and reverts banks over
+    protocol v1 (see "USB-MIDI preset upload")
 
 ### Version Information
 
@@ -1632,10 +1665,11 @@ changes; do not restate them here.
 make clean         # Clean previous build
 make libs          # Rebuild libdaisy, DaisySP, and libcloudseed (clean all)
 make presets-check # Validate presets.toml without building (also run automatically by `make`)
-make test          # Host unit tests (knob/toggle/footswitch state machines, preset parser, engine allocations)
+make test          # Host unit tests (knob/toggle/footswitch state machines, preset parser, engine allocations, USB preset protocol, stored-bank check)
 make               # Build CloudSeed
 make program-boot  # One time: flash the Daisy bootloader (BOOT_SRAM prerequisite)
 make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run)
+cd editor && npm install && npm run dev   # Browser preset editor (http://localhost:5174); npm test runs its Vitest suite
 ```
 
 ### File Locations
@@ -1665,7 +1699,7 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
   `SETTINGS_VERSION = 2` - preset order in presets.toml is frozen unless the version is bumped
 - User presets: FS1 held 5 s saves the current sound into the current preset, FS1 + FS2 held
   5 s restores it to the active bank's values; stored in QSPI at offset 0x1000 and wiped
-  whenever the active bank's text changes (a different firmware image, a USB upload, or a
+  whenever the firmware image or the active bank's text changes (a different firmware image, a USB upload, or a
   revert). presets.toml itself is never modified
 - App type: `BOOT_SRAM` (app runs from SRAM, loaded by the Daisy bootloader)
 - LED2: Continuous blink pattern indicates preset number; both LEDs blinking together at 5 Hz
@@ -1705,5 +1739,5 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 8. Toggle map schema/validation → `parseToggleMap()` / `parseToggleTarget()` in
    [src/preset_bank.cpp](src/preset_bank.cpp); shared with knobs via `splitTarget()` /
    `resolveParamTarget()`
-9. User preset store → `UserPresets` (`src/pedal_storage.h:31-50`), `PedalStorage::Init()`
+9. User preset store → `UserPreset` / `UserPresets` (`src/pedal_storage.h:34-50`), `PedalStorage::Init()`
    (`src/pedal_storage.cpp:41-56`), save/restore handling in the main loop (`src/cloudseed.cpp:654-668`)
