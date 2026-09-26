@@ -4,6 +4,7 @@
 
 #include <memory>
 #include "Parameter.h"
+#include "DelayLineCount.h"
 #include "ModulatedDelay.h"
 #include "MultitapDiffuser.h"
 #include "AudioLib/ShaRandom.h"
@@ -32,12 +33,6 @@ namespace CloudSeed
 	class ReverbChannel
 	{
 	private:
-                // IMPORTANT: CHANGE "TotalLineCount" FOR DAISY SEED HARDWARE
-                //            Original CloudSeed plugin uses 8 Delay Lines, or 12 delay lines?
-                //            DaisyCloudSeed adjusted to 2 to use with Stereo on DaisyPatch hardware (otherwise causes buffer underruns for most presets (except ChorusDelay)
-                //            4/26/2023 GuitarML fork of DaisyCloudSeed uses 4, able to increase for Mono Only Terrarium platform (mono guitar pedal using Daisy Seed)
-		static const int TotalLineCount = 5;  
-
 		float parameters[(int)Parameter::Count];
 		int samplerate;
 		int bufferSize;
@@ -208,7 +203,14 @@ namespace CloudSeed
 				break;
 
 			case Parameter::LineCount:
+				// Only TotalLineCount lines exist, and at least one must run:
+				// ReverbController::LoadPreset() re-applies the stored LineCount, which
+				// is 0 until the audio callback first sets the real count.
 				lineCount = (int)value;
+				if (lineCount < 1)
+					lineCount = 1;
+				if (lineCount > TotalLineCount)
+					lineCount = TotalLineCount;
 				perLineGain = 1.0f / std::sqrt((float)lineCount);
 				break;
 			case Parameter::LineDelay:

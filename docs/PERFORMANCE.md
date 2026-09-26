@@ -15,7 +15,7 @@ feedback multiply (`CloudSeed/DelayLine.h:191`), `ModulatedAllpass::Process*`'s 
 (`CloudSeed/AudioLib/Biquad.h:57-61`). Once a value enters the subnormal range (~1e-38),
 the Cortex-M7 FPU takes a multi-cycle microcoded slow path per operation instead of
 single-cycle. The codebase already had three independent, incomplete, ad-hoc manual
-guards for this (`ReverbChannel.h:359-364`, `AudioLib/Hp1.h:63-66`, `AudioLib/Lp1.h:59-62`)
+guards for this (`ReverbChannel.h:366-373`, `AudioLib/Hp1.h:63-66`, `AudioLib/Lp1.h:59-62`)
 that don't cover the delay-line/allpass feedback state where the problem originates.
 
 **Fix**: set the FPU's Flush-to-Zero bit (FPSCR bit 24) once at boot, in `main()` before

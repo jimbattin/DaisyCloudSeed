@@ -1,13 +1,15 @@
 // Parses the embedded presets.toml document into a PresetBank.
 //
-// Depends only on CloudSeed/Parameter.h, CloudSeed/ParameterNames.h, tomlc99 and
-// libc, so the exact same code runs on the host for `make presets-check`.
+// Depends only on CloudSeed/Parameter.h, CloudSeed/ParameterNames.h,
+// CloudSeed/DelayLineCount.h, tomlc99 and libc, so the exact same code runs on the
+// host for `make presets-check`.
 
 #include "preset_bank.h"
 
 #include <stdio.h>
 #include <string.h>
 
+#include "CloudSeed/DelayLineCount.h"
 #include "CloudSeed/ParameterNames.h"
 #include "toml.h"
 
@@ -179,17 +181,19 @@ bool readPseudoValue(const toml_table_t* table, const char* group,
     return true;
 }
 
-// A delay-line count: the engine truncates LineCount to an int, so a fraction is
-// a typo. The negated range test also rejects NaN.
+// A delay-line count: a whole number 1..CloudSeed::TotalLineCount, the number of
+// lines the engine builds. The engine truncates LineCount to an int, so a fraction
+// is a typo. The negated range test also rejects NaN.
 bool readLineCount(const toml_table_t* preset, const char* key, int index,
                    float& out, char* err, int errLen)
 {
     double lines = 0.0;
-    if (!readNumber(preset, key, lines) || !(lines >= 1.0 && lines <= 5.0)
+    if (!readNumber(preset, key, lines)
+        || !(lines >= 1.0 && lines <= CloudSeed::TotalLineCount)
         || lines != (double)(int)lines)
     {
-        snprintf(err, errLen, "preset %d: %s must be a whole number 1..5", index,
-                 key);
+        snprintf(err, errLen, "preset %d: %s must be a whole number 1..%d", index,
+                 key, CloudSeed::TotalLineCount);
         return false;
     }
     out = (float)lines;

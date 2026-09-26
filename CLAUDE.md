@@ -186,7 +186,7 @@ goes live once it moves `kKnobMoveThreshold` (0.01 of travel) from its snapshot.
 moving) position over `kKnobGlideBlocks` (50) audio blocks = 50 ms, landing exactly on the pot.
 The glide exists because engine parameters are not smoothed downstream
 (`ReverbChannel::SetParameter` assigns the output levels directly,
-`CloudSeed/ReverbChannel.h:308-318`), so a step would click. After the glide the knob writes its
+`CloudSeed/ReverbChannel.h:310-321`), so a step would click. After the glide the knob writes its
 own position whenever that changes by `kKnobApplyEpsilon` (0.001), which keeps ADC noise off the
 engine.
 
@@ -302,7 +302,8 @@ All presets allow 5 delay lines except "Through the Looking Glass"
 - `LineCount` alone must NOT appear in the file: it is driven live by the `"delay_lines.max"`
   toggle target, which selects `default_delay_lines` (off) or `max_delay_lines` (on). The parser
   rejects it
-- `default_delay_lines` and `max_delay_lines` are each a whole number 1..5 (`readLineCount()`,
+- `default_delay_lines` and `max_delay_lines` are each a whole number 1..`TotalLineCount` (5,
+  `CloudSeed/DelayLineCount.h`; checked by `readLineCount()`,
   [src/preset_bank.cpp](src/preset_bank.cpp)), and `default_delay_lines` must not exceed
   `max_delay_lines` - the toggle's off state must never exceed a preset's CPU cap
 - Parsed by `ParsePresetBank()` ([src/preset_bank.cpp](src/preset_bank.cpp)) into `PresetBank`
@@ -539,7 +540,9 @@ allocating - the two uses never overlap in time.
   on/off parameter (`:101`)
 
 **ReverbChannel** ([CloudSeed/ReverbChannel.h](CloudSeed/ReverbChannel.h)):
-- `static const int TotalLineCount = 5;` for the mono implementation (`CloudSeed/ReverbChannel.h:39`)
+- Builds `TotalLineCount` (5) delay lines for the mono implementation
+  ([CloudSeed/DelayLineCount.h](CloudSeed/DelayLineCount.h)); `SetParameter(LineCount)` clamps the
+  active count to 1..`TotalLineCount` (`CloudSeed/ReverbChannel.h:205-215`)
 - Contains delay lines, diffusers, modulation
 
 **DelayLine** ([CloudSeed/DelayLine.h](CloudSeed/DelayLine.h)):
@@ -864,8 +867,8 @@ ever flashed it would stop boot and blink both LEDs):
   the three pseudo-targets `"delay_lines.max"`, `"reverse.enabled"`, `"reverse.direct_mix"`.
   Unknown toggle keys, unknown groups/parameters, cross-group targets, runtime parameters, and
   continuous (non-boolean) parameters are all rejected
-- `blinks` is 1..20; `default_delay_lines` and `max_delay_lines` are each a whole number 1..5
-  (a fraction or `nan` fails with `preset N: <key> must be a whole number 1..5`), and
+- `blinks` is 1..20; `default_delay_lines` and `max_delay_lines` are each a whole number
+  1..`TotalLineCount` (5; a fraction or `nan` fails with `preset N: <key> must be a whole number 1..5`), and
   `default_delay_lines` must not exceed `max_delay_lines`
   (`preset N: default_delay_lines exceeds max_delay_lines`); the ms fields are optional
   integers 0..60000 (defaults 150/150/5000; `readOptionalMs()` reads them with `toml_int_in`, so
@@ -892,24 +895,29 @@ at the next boot.
 
 ### 4. Changing Number of Delay Lines
 
-**Files**: [CloudSeed/ReverbChannel.h](CloudSeed/ReverbChannel.h),
-[src/preset_bank.cpp](src/preset_bank.cpp), [presets.toml](presets.toml)
+**File**: [CloudSeed/DelayLineCount.h](CloudSeed/DelayLineCount.h)
 
-`TotalLineCount` (`CloudSeed/ReverbChannel.h:39`, currently 5) is how many `DelayLine`s the
-channel builds. `SetParameter(LineCount)` does not clamp, and `Process` loops over `lines[i]`
-for `i < lineCount` (`CloudSeed/ReverbChannel.h:210-213`, `:392-395`), so no preset may be able
-to select more lines than exist. Change these together:
-1. `static const int TotalLineCount = N;`
-2. The upper bound in `readLineCount()` (`src/preset_bank.cpp:188`, and the `1..5` in its error
-   message), so `make` rejects a `default_delay_lines` / `max_delay_lines` above N
-3. Every preset's `default_delay_lines` / `max_delay_lines` in presets.toml (nine ship
-   `max_delay_lines = 5.0`)
-4. The `1..5` wording in presets.toml's header, this file, README.md, and the expected messages
-   and 5.0 values in `tests/preset_bank_test.cpp` / `tests/fixtures/two_presets.toml`
+```cpp
+constexpr int TotalLineCount = 5;  // CloudSeed/DelayLineCount.h:14
+```
 
-Lowering `TotalLineCount` alone still compiles and passes `make`, then indexes past `lines` the
-first time SWITCH_1 selects `max_delay_lines`. Raising it costs SDRAM pool memory and CPU per
-line ("Through the Looking Glass" already crackles above 4).
+`TotalLineCount` is the single definition of how many `DelayLine`s `ReverbChannel` builds, and
+everything that depends on it follows automatically:
+- `ReverbChannel::SetParameter(LineCount)` clamps the active count to 1..`TotalLineCount`
+  (`CloudSeed/ReverbChannel.h:205-215`), so no caller can make `Process` loop past the lines that
+  exist (`:394`, `:397`). The lower bound matters too: `ReverbController::LoadPreset()` re-applies
+  the stored `LineCount`, which is 0 at boot until the audio callback sets the real count
+- `readLineCount()` (`src/preset_bank.cpp:187-201`) validates `default_delay_lines` /
+  `max_delay_lines` against it, so `make` rejects a preset asking for more lines than exist,
+  naming the preset and key: `preset N: max_delay_lines must be a whole number 1..<TotalLineCount>`.
+  The `preset_check` and `preset_bank_test` rules list the header as a prerequisite, so they are
+  rebuilt when it changes
+
+After lowering it, `make` fails until every preset's `default_delay_lines` / `max_delay_lines`
+fits (nine ship `max_delay_lines = 5.0`). Also update the `1..5` wording in presets.toml's
+header, this file and README.md, and the expected `1..5` messages and 5.0 values in
+`tests/preset_bank_test.cpp` / `tests/fixtures/two_presets.toml`. Raising it costs SDRAM pool
+memory and CPU per line ("Through the Looking Glass" already crackles above 4).
 
 ### 5. Modifying Switch Behavior
 
@@ -1265,10 +1273,10 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
   (`libdaisy/core/STM32H750IB_sram.lds:244-251`), which is where `DelayLine`'s `tempBuffer`,
   `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:44-46`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 206,452 B of 480KB (42.00%). Of that, the
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 206,492 B of 480KB (42.01%). Of that, the
   embedded `presets.toml` blob is 48,912 B (`build/presets_toml.o` - it carries the
   per-preset `[preset.knob_map]`, `[preset.toggle_map]`, `[preset.params.reverse]` and
-  `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 7,786 B
+  `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 7,791 B
 - DTCMRAM: 27,988 B of 128KB (21.35%) — includes the 4,804 B `gPresets` bank (40 B of that per
   preset slot is the knob + toggle maps: 24 B knobs, 16 B toggles), the 6,676 B
   `gStorage` user-preset store (`PersistentStorage` keeps a defaults copy and a live copy of the 3,332 B
@@ -1302,11 +1310,11 @@ with the exact file/line and pattern it addresses.
 
 ### Mono vs Stereo
 
-This fork differs from the original CloudSeed and its predecessors (`CloudSeed/ReverbChannel.h:35-39`):
+This fork differs from the original CloudSeed and its predecessors (`CloudSeed/DelayLineCount.h`):
 - **Original CloudSeed plugin**: 8 (or 12) delay lines, stereo
 - **DaisyCloudSeed (Daisy Patch)**: 2 delay lines, stereo
 - **GuitarML Terrarium fork**: 4 delay lines, mono
-- **This fork**: 5 delay lines, mono (`static const int TotalLineCount = 5;`)
+- **This fork**: 5 delay lines, mono (`constexpr int TotalLineCount = 5;`)
 
 The trade-off: More delay lines in mono = richer reverb tail.
 

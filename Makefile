@@ -54,7 +54,7 @@ $(BUILD_DIR)/toml_host.o: third_party/tomlc99/toml.c | $(BUILD_DIR)
 	$(HOSTCC) -std=gnu11 -O1 -Ithird_party/tomlc99 -c -o $@ $<
 
 $(BUILD_DIR)/preset_check: tools/preset_check.cpp src/preset_bank.cpp src/preset_bank.h \
-		$(BUILD_DIR)/toml_host.o | $(BUILD_DIR)
+		CloudSeed/DelayLineCount.h $(BUILD_DIR)/toml_host.o | $(BUILD_DIR)
 	$(HOSTCXX) -std=gnu++14 -O1 -I. -Isrc -Ithird_party/tomlc99 -o $@ \
 		tools/preset_check.cpp src/preset_bank.cpp $(BUILD_DIR)/toml_host.o
 
@@ -89,7 +89,8 @@ $(BUILD_DIR)/toggle_bank_test: tests/toggle_bank_test.cpp tests/check.h src/togg
 	$(HOSTCXX) $(HOST_TEST_CXXFLAGS) -o $@ $<
 $(BUILD_DIR)/footswitch_gestures_test: tests/footswitch_gestures_test.cpp tests/check.h src/footswitch_gestures.h | $(BUILD_DIR)
 	$(HOSTCXX) $(HOST_TEST_CXXFLAGS) -o $@ $<
-$(BUILD_DIR)/preset_bank_test: tests/preset_bank_test.cpp tests/check.h src/preset_bank.cpp src/preset_bank.h $(BUILD_DIR)/toml_host.o | $(BUILD_DIR)
+$(BUILD_DIR)/preset_bank_test: tests/preset_bank_test.cpp tests/check.h src/preset_bank.cpp src/preset_bank.h \
+		CloudSeed/DelayLineCount.h $(BUILD_DIR)/toml_host.o | $(BUILD_DIR)
 	$(HOSTCXX) $(HOST_TEST_CXXFLAGS) -o $@ tests/preset_bank_test.cpp src/preset_bank.cpp $(BUILD_DIR)/toml_host.o
 
 test: $(HOST_TESTS)
