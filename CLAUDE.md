@@ -320,7 +320,7 @@ All presets allow 5 delay lines except "Through the Looking Glass"
 
 **Boot-time memory**: the parser allocates exclusively from a 512 KB bump arena carved from the
 head of `custom_pool` (`cloudseed.cpp:275-284`), used between `hw.Init()` and
-`new CloudSeed::ReverbController(...)`. Peak measured usage is 141,312 B on x86-64 (smaller on
+`new CloudSeed::ReverbController(...)`. Peak measured usage is 141,696 B on x86-64 (smaller on
 32-bit ARM); the arena is abandoned - not freed - so the SDRAM pool starts at offset 0 for the
 reverb. Permanent SDRAM cost of the TOML system: zero.
 
@@ -577,7 +577,7 @@ scalars (a parameter value that is non-finite or outside 0..1; `max_delay_lines`
 (unknown group/parameter, wrong group, a runtime parameter, or - for toggles - a parameter not
 in `kToggleParams`), and a document too large for the boot parse arena - the host tool allocates
 through a replica of `TOML_ARENA_SIZE` (512 KB, 8-byte aligned, no reuse), so `presets.toml: 10
-presets valid, boot arena peak 141312 of 524288 bytes` is the same peak the pedal sees. Host
+presets valid, boot arena peak 141696 of 524288 bytes` is the same peak the pedal sees. Host
 pointers are 64-bit, so the reported peak over-estimates the 32-bit target: a pass here implies
 a fit on hardware. A near-miss should be fixed by raising `TOML_ARENA_SIZE` (`cloudseed.cpp:275`),
 not by loosening the host check.
@@ -1161,8 +1161,8 @@ blink (`updateConfirmBlink()`, `cloudseed.cpp:595-610`).
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
   (`libdaisy/core/STM32H750IB_sram.lds:244-251`), which is where `DelayLine`'s `tempBuffer`,
   `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:44-46`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 204,732 B of 480KB (41.65%). Of that, the
-  embedded `presets.toml` blob is 47,256 B (`build/presets_toml.o` - it carries the
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 205,124 B of 480KB (41.73%). Of that, the
+  embedded `presets.toml` blob is 47,644 B (`build/presets_toml.o` - it carries the
   per-preset `[preset.knob_map]`, `[preset.toggle_map]`, `[preset.params.reverse]` and
   `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 7,786 B
 - DTCMRAM: 27,988 B of 128KB (21.35%) — includes the 4,804 B `gPresets` bank (40 B of that per
@@ -1310,7 +1310,7 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 ### Key Concepts
 - Buffer size: 48 samples
 - Sample rate: 48kHz (typical)
-- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena; peak 141,312 B)
+- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena; peak 141,696 B)
 - Delay lines: 5 (mono Terrarium), toggled per preset between `default_delay_lines` and
   `max_delay_lines` in presets.toml (default SWITCH_1, `[preset.toggle_map]`)
 - Presets: 10, defined in presets.toml, `gPresets.count` at runtime (max `kMaxPresets` = 16)

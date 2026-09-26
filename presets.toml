@@ -63,7 +63,9 @@
 #     LineDecay       tail decay time, 0.05-60 s
 #     LineModAmount   line delay modulation depth, 0-2.5 ms
 #     LineModRate     line delay modulation rate, 0-5 Hz
-#     LateStageTap    on when >= 0.5: tap the line after diffusion instead of before
+#     LateStageTap    on when >= 0.5: each line outputs from before its delay (after the late
+#                     diffuser, which then runs first), so the tail starts one LineDelay sooner;
+#                     off: output after the delay
 #     Interpolation   on when >= 0.5: fractional-delay interpolation (smoother modulation, more CPU)
 #
 #   [preset.params.late_diffusion]  Late diffusion: allpass chain inside each delay line.
@@ -118,10 +120,10 @@
 #   late_diffusion.LateDiffusionEnabled   flipping clears the late diffusers' buffers
 #   early_diffusion.DiffusionStages       off = 1 allpass stage, on = 2; flipping overwrites the stored value with 0.0/1.0
 #   late_diffusion.LateDiffusionStages    off = 1 allpass stage, on = 2; flipping overwrites the stored value with 0.0/1.0
-#   late_eq.LowShelfEnabled
-#   late_eq.HighShelfEnabled
-#   late_eq.CutoffEnabled
-#   late.LateStageTap
+#   late_eq.LowShelfEnabled               low shelf on the tail on/off
+#   late_eq.HighShelfEnabled              high shelf on the tail on/off
+#   late_eq.CutoffEnabled                 in-loop low-pass on the tail on/off
+#   late.LateStageTap                     on = each line outputs before its delay (tail starts one LineDelay sooner)
 #   late.Interpolation                    more CPU; may crackle at 5 lines
 # Not toggle targets: continuous parameters (a toggle would slam them to 0/1), LineCount (use delay_lines.max), reverse.delay (knob only), InputMix/CrossSeed (no effect in mono).
 #

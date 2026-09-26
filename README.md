@@ -163,11 +163,11 @@ All eight keys are required. Accepted targets (lever up = on):
 | `early.isReverse` | Bloom (default SW 2) |
 | `reverse.enabled` | Reverse voice on (default SW 3) |
 | `reverse.direct_mix` | Off = reverse feeds the reverb tail, on = reversed reverb mixed into the output (default SW 4) |
-| `input.HiPassEnabled`, `input.LowPassEnabled` | While a toggle targets one, knobs on `HighPass` / `LowPass` no longer switch that filter on |
+| `input.HiPassEnabled`, `input.LowPassEnabled` | Input high-pass / low-pass on/off. While a toggle targets one, knobs on `HighPass` / `LowPass` no longer switch that filter on |
 | `early_diffusion.DiffusionEnabled`, `late_diffusion.LateDiffusionEnabled` | Flipping clears that diffuser's buffers |
 | `early_diffusion.DiffusionStages`, `late_diffusion.LateDiffusionStages` | Off = 1 allpass stage, on = 2; a flip overwrites the stored stage value with 0.0/1.0 |
-| `late_eq.LowShelfEnabled`, `late_eq.HighShelfEnabled`, `late_eq.CutoffEnabled` | |
-| `late.LateStageTap` | |
+| `late_eq.LowShelfEnabled`, `late_eq.HighShelfEnabled`, `late_eq.CutoffEnabled` | Low shelf / high shelf / low-pass on the tail on/off (inside each line's feedback path) |
+| `late.LateStageTap` | On = each line outputs from before its delay (after the late diffuser, which then runs first), so the tail starts one `LineDelay` sooner; off = output after the delay |
 | `late.Interpolation` | More CPU; may crackle at 5 lines |
 
 Continuous parameters, `LineCount`, `reverse.delay` (knob only) and `InputMix`/`CrossSeed`
