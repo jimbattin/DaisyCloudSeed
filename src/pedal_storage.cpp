@@ -65,16 +65,11 @@ bool PedalStorage::RestoredBypass() {
 }
 
 const char* PedalStorage::StoredBankText(uint32_t& length) {
-    const StoredBankHeader* h =
-        static_cast<const StoredBankHeader*>(qspi_.GetData(STORED_BANK_HEADER_OFFSET));
-    if (h->magic != STORED_BANK_MAGIC || h->firmwareHash != imageHash()
-        || h->length == 0 || h->length > PresetProtocol::kMaxTextBytes)
-        return nullptr;
-    const char* text = static_cast<const char*>(qspi_.GetData(STORED_BANK_TEXT_OFFSET));
-    if (Fnv1a32(text, h->length) != h->textHash)
-        return nullptr;
-    length = h->length;
-    return text;
+    const StoredBankHeader& header =
+        *static_cast<const StoredBankHeader*>(qspi_.GetData(STORED_BANK_HEADER_OFFSET));
+    return ValidStoredBankText(header,
+                               static_cast<const char*>(qspi_.GetData(STORED_BANK_TEXT_OFFSET)),
+                               imageHash(), length);
 }
 
 // The QSPI window is cached by the M7 (PersistentStorage.h does the same), so each

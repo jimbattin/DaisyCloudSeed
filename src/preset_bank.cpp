@@ -866,3 +866,32 @@ bool ParsePresetBank(char* toml, PresetBank& bank, char* err, int errLen,
 
     return ok;
 }
+
+bool ParsePresetBankText(const char* text, uint32_t length, PresetBank& bank, char* err,
+                         int errLen, void* (*alloc)(size_t), void (*dealloc)(void*))
+{
+    bank.count = 0;
+    if (length == 0)
+    {
+        snprintf(err, errLen, "empty preset text");
+        return false;
+    }
+    if (memchr(text, 0, length))
+    {
+        snprintf(err, errLen, "NUL byte in preset text");
+        return false;
+    }
+    // toml_parse() mutates its input and needs a terminating NUL, so parse a scratch
+    // copy, never the source.
+    char* scratch = static_cast<char*>(alloc((size_t)length + 1));
+    if (!scratch)
+    {
+        snprintf(err, errLen, "arena too small");
+        return false;
+    }
+    memcpy(scratch, text, length);
+    scratch[length] = '\0';
+    const bool ok = ParsePresetBank(scratch, bank, err, errLen, alloc, dealloc);
+    dealloc(scratch);
+    return ok;
+}

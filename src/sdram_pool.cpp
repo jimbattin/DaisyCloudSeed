@@ -61,17 +61,9 @@ static void* toml_arena_alloc(size_t size) {
 static void toml_arena_free(void*) {}
 
 bool ParsePresetText(const char* text, uint32_t length, PresetBank& bank, char* err, int errLen) {
-    if (length == 0) { snprintf(err, errLen, "empty preset text"); return false; }
-    if (memchr(text, 0, length)) { snprintf(err, errLen, "NUL byte in preset text"); return false; }
     toml_arena_index = 0;
-    // toml_parse() mutates its input and needs a terminating NUL, so parse a scratch
-    // copy, never the source (.rodata blob, QSPI mapping or upload buffer).
-    char* scratch = static_cast<char*>(toml_arena_alloc(length + 1));
-    if (!scratch) { snprintf(err, errLen, "arena too small"); return false; }
-    memcpy(scratch, text, length);
-    scratch[length] = '\0';
-    const bool ok = ParsePresetBank(scratch, bank, err, errLen,
-                                    toml_arena_alloc, toml_arena_free);
+    const bool ok = ParsePresetBankText(text, length, bank, err, errLen,
+                                        toml_arena_alloc, toml_arena_free);
     toml_arena_index = 0;
     return ok;
 }

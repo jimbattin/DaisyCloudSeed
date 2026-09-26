@@ -25,7 +25,8 @@ DaisyCloudSeed/
 ├── src/                   # Firmware sources
 │   ├── cloudseed.cpp          # main(), pedal state, controls, audio callback, preset load
 │   ├── pedal_leds.h/.cpp      # LED1/LED2: preset blink, save/restore confirmation, FatalErrorLoop()
-│   ├── pedal_storage.h/.cpp   # QSPI Settings + UserPresets (PedalStorage) + uploaded StoredBank, firmware+bank hash
+│   ├── pedal_storage.h/.cpp   # QSPI Settings + UserPresets (PedalStorage) + uploaded bank I/O, firmware+bank hash
+│   ├── stored_bank.h          # Uploaded-bank QSPI layout + ValidStoredBankText() boot check (host-portable)
 │   ├── sdram_pool.h/.cpp      # custom_pool_allocate() SDRAM bump pool + dedicated TOML parse arena (boot + USB upload)
 │   ├── preset_protocol.h/.cpp # USB-MIDI SysEx preset upload protocol v1 (host-portable; docs/USB_MIDI.md)
 │   ├── usb_midi_link.h/.cpp   # UsbMidiLink: USB-MIDI receive/reply over daisy::MidiUsbTransport
@@ -42,7 +43,8 @@ DaisyCloudSeed/
 │   ├── footswitch_gestures_test.cpp
 │   ├── preset_bank_test.cpp
 │   ├── engine_alloc_test.cpp  # CloudSeed engine: SetParameter()/Process() never allocate
-│   ├── preset_protocol_test.cpp # SysEx assembler, USB-MIDI packer, upload/read/revert state machine
+│   ├── preset_protocol_test.cpp # SysEx assembler, USB-MIDI packer, protocol state machine, end-to-end via the parser
+│   ├── stored_bank_test.cpp   # ValidStoredBankText(): which stored bank the pedal boots
 │   └── fixtures/two_presets.toml  # Parser fixture (Chorus + Through the Looking Glass)
 ├── docs/
 │   ├── HARDWARE_TESTS.md      # On-pedal validation checklist per revision (USB-MIDI link, audio regressions)
@@ -347,7 +349,8 @@ All presets allow 5 delay lines except "Through the Looking Glass"
 **Boot-time memory**: preset text - the embedded presets.toml, or an uploaded bank read from
 QSPI - is parsed from a dedicated 512 KB `DSY_SDRAM_BSS` arena that is not part of `custom_pool`
 (`toml_arena`, `src/sdram_pool.cpp:49-59`; parsing itself is `ParsePresetText()`,
-`src/sdram_pool.cpp:63-77`). The same arena and parser run again at runtime to validate a USB
+`src/sdram_pool.cpp:63-69`, a wrapper that resets the arena around the host-portable
+`ParsePresetBankText()`, `src/preset_bank.cpp:870`). The same arena and parser run again at runtime to validate a USB
 upload before anything is written to flash (see "USB-MIDI preset upload" below). Every parse
 starts the arena at offset 0 and resets it on return, so boot and an upload validation never
 overlap, and the reverb's `custom_pool` is unaffected either way. Peak measured usage at boot is
@@ -521,27 +524,32 @@ is cleared, so knobs and toggles moved during the session re-park instead of jum
 **Validation and storage**: an upload is checked with the firmware's own parser
 (`ParsePresetText()` into a dedicated `PresetBank gUploadCheck`, `src/cloudseed.cpp:138-143`) -
 the same rules `make presets-check` enforces - before anything reaches flash. QSPI layout
-(`src/pedal_storage.h:56-70`): a `StoredBankHeader` (`magic` "CSB1", `length`, `textHash`,
+(`src/stored_bank.h:15-26`): a `StoredBankHeader` (`magic` "CSB1", `length`, `textHash`,
 `firmwareHash`) at `STORED_BANK_HEADER_OFFSET` (0x10000, its own 4 KB sector so `REVERT` erases
 only it) and the text at `STORED_BANK_TEXT_OFFSET` (0x11000) up to
 `PresetProtocol::kMaxTextBytes` (96 KiB). `PedalStorage::WriteStoredBank()`
-(`src/pedal_storage.cpp:88-101`) erases both, writes and verifies the text, then writes and
+(`src/pedal_storage.cpp:83-96`) erases both, writes and verifies the text, then writes and
 verifies the header last, so a write cut off by power loss leaves no valid stored bank.
-`PedalStorage::StoredBankText()` (`src/pedal_storage.cpp:67-78`) accepts the stored bank only if
-its `firmwareHash` matches the running image - the same discard-on-reflash rule saved user
-presets follow.
+`PedalStorage::StoredBankText()` (`src/pedal_storage.cpp:67-73`) hands the memory-mapped header
+and text to the host-portable `ValidStoredBankText()` (`src/stored_bank.h:33-43`), which accepts
+the bank only if the magic matches, its `firmwareHash` matches the running image (the same
+discard-on-reflash rule saved user presets follow), the length is 1..`kMaxTextBytes` (checked
+before the text is hashed, so a corrupt header never reads past the region), and the text hash
+matches.
 
 **Boot** (`src/cloudseed.cpp:584-598`): the stored bank is used if `StoredBankText()` returns one
 and it parses; otherwise the embedded presets.toml (`EmbeddedPresetText()`,
-`src/sdram_pool.cpp:79-82`) is used, and a parse failure there is the unrecoverable
+`src/sdram_pool.cpp:71-74`) is used, and a parse failure there is the unrecoverable
 `FatalErrorLoop()` case. Either way `gStorage.Init(active.hash)` mixes the active bank's FNV-1a
 hash into the user-preset `identity` (see "Firmware + bank identity" above), so an upload, a
 revert, or a reflash all wipe saved user presets.
 
-**Tests**: [tests/preset_protocol_test.cpp](tests/preset_protocol_test.cpp) (`make test`) covers
+**Tests** (`make test`): [tests/preset_protocol_test.cpp](tests/preset_protocol_test.cpp) covers
 the SysEx assembler, the USB-MIDI packer, and the upload/read/revert state machine - framing,
-sequencing, timeouts and error replies - against the host-portable
-[src/preset_protocol.h](src/preset_protocol.h) / `.cpp`, with no libdaisy involved.
+sequencing, timeouts and error replies - plus an end-to-end upload of the parser fixture through
+USB-MIDI packets and the real parser; [tests/stored_bank_test.cpp](tests/stored_bank_test.cpp)
+covers `ValidStoredBankText()`; `ParsePresetBankText()` is covered in `preset_bank_test`. None
+of them involve libdaisy.
 
 ### Parameters
 
@@ -599,8 +607,8 @@ declare it `extern`. Callers placement-new into it (e.g.
 
 The TOML parse arena is not part of this pool: it is a separate 512 KB `DSY_SDRAM_BSS`
 buffer (`toml_arena`, `src/sdram_pool.cpp:49-59`), used by `ParsePresetText()`
-(`src/sdram_pool.cpp:63-77`) both at boot and to validate a USB upload before it reaches
-flash (see "USB-MIDI preset upload" above). `EmbeddedPresetText()` (`:79-82`) hands out the
+(`src/sdram_pool.cpp:63-69`) both at boot and to validate a USB upload before it reaches
+flash (see "USB-MIDI preset upload" above). `EmbeddedPresetText()` (`:71-74`) hands out the
 embedded presets.toml.
 
 ### Core Classes
@@ -708,7 +716,9 @@ with the parser's message on stderr if the file is rejected), `--print-knob-map`
 
 `make` cannot produce firmware from a presets.toml the parser would reject: the embedded blob
 (`$(BUILD_DIR)/presets_toml.o`) depends on `$(BUILD_DIR)/presets.valid`, whose recipe is
-`preset_check --validate presets.toml` (`Makefile:53-70`). Validation covers non-ASCII bytes
+`preset_check --validate presets.toml` (`Makefile:53-70`). `preset_check` calls
+`ParsePresetBankText()` with the file's full length, exactly as the pedal does at boot, so an
+empty file or an embedded NUL byte is rejected too. Validation covers non-ASCII bytes
 (any byte >= 0x80, comments included, rejected with its line and column before tomlc99 sees the
 text: `checkAscii()`, `src/preset_bank.cpp:811-837`), TOML syntax,
 missing/unknown/misplaced parameters, unknown preset- and root-level keys, out-of-range
@@ -737,7 +747,7 @@ audio.
 make test
 ```
 
-Builds six host executables into `build/` with `HOSTCC`/`HOSTCXX` (`Makefile:80-113`) and runs them;
+Builds seven host executables into `build/` with `HOSTCC`/`HOSTCXX` (`Makefile:80-121`) and runs them;
 no ARM toolchain or firmware build is involved. Each prints `<suite>: N checks, 0 failed` and
 exits non-zero on any failed `CHECK()` ([tests/check.h](tests/check.h)):
 - `knob_bank_test` - `KnobBank` parking, move threshold, 50-block takeover glide, apply
@@ -751,16 +761,25 @@ exits non-zero on any failed `CHECK()` ([tests/check.h](tests/check.h)):
   fixture (Chorus + Through the Looking Glass), then a table of single-line mutations that
   must each be rejected with a specific message (non-ASCII bytes in a value and in a comment
   among them), a check of the line and column reported for a non-ASCII byte, and two
-  mutations that must be accepted
+  mutations that must be accepted. `ParsePresetBankText()` is checked to parse exactly
+  `length` bytes of text with no NUL terminator, to leave its source untouched, to release
+  every allocation on success and on failure, and to reject empty text, embedded NUL bytes,
+  and a failed scratch allocation
 - `engine_alloc_test` - the whole CloudSeed library compiled for the host, with counting
   replacements for `operator new` and `custom_pool_allocate`: after boot, every parameter is
   swept 0 → 1 → 0.5 through `SetParameter()` with a `Process()` block after each write, and
   must cause zero heap and zero pool allocations (see "Performance Architecture")
-- `preset_protocol_test` - `SysExAssembler` framing (split frames, real-time bytes, overflow,
-  aborted frames), `PackSysExUsbMidi()` CIN/padding, and the `PresetProtocol` upload/read/revert
-  state machine: INFO fields, BEGIN length checks, chunked upload + COMMIT, duplicate/gapped
-  sequence numbers, length/hash mismatches, a `ParseError` reply body, READ chunking, the 5 s
-  session timeout, ABORT, REVERT, and foreign/unknown SysEx (80 checks)
+- `preset_protocol_test tests/fixtures/two_presets.toml` - `SysExAssembler` framing (split
+  frames, real-time bytes, overflow, aborted, empty and restarted frames), `PackSysExUsbMidi()`
+  CIN/padding, and the `PresetProtocol` state machine: INFO fields, BEGIN length checks and
+  restart, chunked upload + COMMIT including a full 98,304-byte upload and an overrun at that
+  size, duplicate/gapped/wrapped sequence numbers, length/hash mismatches (hash bits 28-31
+  included), `ParseError` and `FlashError` replies, READ chunking, the 5 s session timeout,
+  ABORT, REVERT, and foreign/unknown SysEx. Every reply is checked to be one well-formed
+  7-bit SysEx message. An end-to-end case uploads the fixture through USB-MIDI packets and the
+  real parser, and checks that a rejected bank's COMMIT reply carries the parser's own message
+- `stored_bank_test` - `ValidStoredBankText()`: erased flash, wrong magic, a different firmware
+  image, corrupted text or hash, and the 1..`kMaxTextBytes` length bounds
 
 The parser test deliberately uses its own fixture, not presets.toml, so editing preset values
 never breaks `make test`; the live file stays covered by `make presets-check` and the build
@@ -1427,10 +1446,10 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
   (`libdaisy/core/STM32H750IB_sram.lds:239-250`), which is where `DelayLine`'s `tempBuffer`,
   `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:52-54`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 233,192 B of 480KB (47.44%). Of that, the
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 233,208 B of 480KB (47.45%). Of that, the
   embedded `presets.toml` blob is 49,116 B (`build/presets_toml.o` - it carries the
   per-preset `[preset.knob_map]`, `[preset.toggle_map]`, `[preset.params.reverse]` and
-  `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 8,081 B
+  `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 8,285 B
 - DTCMRAM: 45,420 B of 128KB (34.65%) — up from 30,284 B; the added 15,136 B is libdaisy's USB
   device stack, pulled in by `UsbMidiLink`: the four 2 KB `UserRxBufferFS`/`UserTxBufferFS`/
   `UserRxBufferHS`/`UserTxBufferHS` ring buffers, `midi_usb_handle` (2,112 B),

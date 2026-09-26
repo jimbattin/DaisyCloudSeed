@@ -73,4 +73,12 @@ struct PresetBank {
 bool ParsePresetBank(char* toml, PresetBank& bank, char* err, int errLen,
                      void* (*alloc)(size_t), void (*dealloc)(void*));
 
+// Parses `length` bytes of preset TOML that need not be NUL-terminated (the embedded
+// blob, memory-mapped QSPI, a USB upload buffer) without modifying them: rejects
+// empty text and embedded NUL bytes, then runs ParsePresetBank() on a NUL-terminated
+// scratch copy that is the first allocation through `alloc`. Same result contract
+// as ParsePresetBank().
+bool ParsePresetBankText(const char* text, uint32_t length, PresetBank& bank, char* err,
+                         int errLen, void* (*alloc)(size_t), void (*dealloc)(void*));
+
 #endif

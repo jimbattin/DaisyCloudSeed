@@ -6,7 +6,7 @@
 
 #include "daisy_seed.h"
 #include "preset_bank.h"
-#include "preset_protocol.h"
+#include "stored_bank.h"
 
 constexpr uint32_t QSPI_SECTOR_BYTES = 4096;
 constexpr uint32_t USER_PRESET_VALID = 1u;  // erased flash reads 0xFFFFFFFF
@@ -52,22 +52,6 @@ struct UserPresets {
 // +4: PersistentStorage prefixes its State word.
 static_assert(sizeof(UserPresets) + 4 <= QSPI_SECTOR_BYTES,
               "user presets must fit one QSPI sector");
-
-// Bank uploaded over USB (docs/USB_MIDI.md). The header has its own sector, so REVERT
-// erases one sector; the text follows it. Everything stays below the 256 KB the
-// Daisy bootloader never touches (the program area starts at 0x40000).
-constexpr uint32_t STORED_BANK_HEADER_OFFSET = 0x10000;
-constexpr uint32_t STORED_BANK_TEXT_OFFSET   = 0x11000;  // up to PresetProtocol::kMaxTextBytes
-constexpr uint32_t STORED_BANK_MAGIC         = 0x31425343u;  // "CSB1"
-static_assert(STORED_BANK_TEXT_OFFSET + PresetProtocol::kMaxTextBytes <= 0x40000,
-              "stored bank must stay below the bootloader's program area");
-
-struct StoredBankHeader {
-    uint32_t magic;         // STORED_BANK_MAGIC; erased flash reads 0xFFFFFFFF
-    uint32_t length;        // text bytes, no NUL
-    uint32_t textHash;      // Fnv1a32() of the text
-    uint32_t firmwareHash;  // firmwareImageHash() of the image that stored it
-};
 
 // Preset index + bypass (QSPI offset 0), per-preset user edits (offset 0x1000) and
 // the uploaded preset bank (offset 0x10000).

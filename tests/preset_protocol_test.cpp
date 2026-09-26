@@ -1,10 +1,14 @@
 // Host test for the USB-MIDI preset protocol: SysEx framing from the USB stream,
-// USB-MIDI packing of replies, and the upload/read/revert state machine.
+// USB-MIDI packing of replies, and the upload/read/revert state machine, plus an
+// end-to-end run through the real preset parser (fixture path in argv[1]).
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <string>
 #include <vector>
 
 #include "check.h"
+#include "preset_bank.h"
 #include "preset_protocol.h"
 
 typedef std::vector<uint8_t> Bytes;
@@ -30,17 +34,43 @@ static uint32_t readU32(const uint8_t* p) {
 // Frame body between F0 and F7.
 static Bytes frame(uint8_t cmd) { return Bytes{0x7D, 0x43, 0x53, cmd}; }
 
+// Every reply is one well-formed SysEx message of ours: F0 7D 43 53 <cmd|0x40> <status>
+// ... F7, at most kMaxReply bytes, with every byte in between below 0x80.
+static void checkReplyWellFormed(const PresetProtocol& p) {
+    const size_t n = p.ReplyLength();
+    if (n == 0) return;
+    const uint8_t* r = p.Reply();
+    bool ok = n >= 7 && n <= PresetProtocol::kMaxReply && r[0] == 0xF0
+              && r[1] == kSysExManufacturer && r[2] == kSysExTag0 && r[3] == kSysExTag1
+              && (r[4] & 0x40) != 0 && r[n - 1] == 0xF7;
+    for (size_t i = 1; ok && i + 1 < n; ++i) ok = r[i] < 0x80;
+    CHECK(ok);
+}
+
+static std::string defaultActiveText() {
+    std::string s;
+    for (int i = 0; i < 1000; ++i) s.push_back(static_cast<char>('a' + i % 26));
+    return s;
+}
+
 struct Fixture {
     PresetProtocol proto;
     std::vector<char> rx = std::vector<char>(PresetProtocol::kMaxTextBytes);
     std::string activeText;
-    Fixture() {
-        for (int i = 0; i < 1000; ++i) activeText.push_back(static_cast<char>('a' + i % 26));
+    explicit Fixture(std::string text = defaultActiveText(), BankValidator v = stubValidator,
+                     uint32_t hash = 0, bool useHash = false)
+        : activeText(text) {
         ActiveBank active = {activeText.c_str(), (uint32_t)activeText.size(),
-                             Fnv1a32(activeText.data(), (uint32_t)activeText.size()), true, 7};
-        proto.Init(rx.data(), stubValidator, active);
+                             useHash ? hash : Fnv1a32(activeText.data(), (uint32_t)activeText.size()),
+                             true, 7};
+        proto.Init(rx.data(), v, active);
     }
-    UploadAction send(const Bytes& f, uint32_t now = 0) { return proto.Handle(f.data(), f.size(), now); }
+    UploadAction send(const Bytes& f, uint32_t now = 0) {
+        const UploadAction a = proto.Handle(f.data(), f.size(), now);
+        checkReplyWellFormed(proto);
+        return a;
+    }
+    void finish(UploadAction a, bool ok) { proto.Finish(a, ok); checkReplyWellFormed(proto); }
     // Reply cmd and status; -1 when no reply.
     int replyCmd() const { return proto.ReplyLength() ? proto.Reply()[4] : -1; }
     int status() const { return proto.ReplyLength() ? proto.Reply()[5] : -1; }
@@ -50,6 +80,17 @@ struct Fixture {
     UploadAction data(uint32_t seq, const std::string& chunk, uint32_t now = 0) {
         Bytes f = frame(0x03); appendU14(f, seq); f.insert(f.end(), chunk.begin(), chunk.end());
         return send(f, now);
+    }
+    // BEGIN, every chunk, COMMIT. Returns COMMIT's action; stops early on a non-Ok reply.
+    UploadAction upload(const std::string& text, uint32_t chunkBytes = PresetProtocol::kChunkBytes) {
+        begin((uint32_t)text.size(), Fnv1a32(text.data(), (uint32_t)text.size()));
+        if (status() != 0) return UploadAction::None;
+        uint32_t seq = 0;
+        for (size_t off = 0; off < text.size(); off += chunkBytes, ++seq) {
+            data(seq, text.substr(off, chunkBytes));
+            if (status() != 0) return UploadAction::None;
+        }
+        return send(frame(0x04));
     }
 };
 
@@ -158,9 +199,9 @@ static void testUpload() {
     CHECK(fx.proto.ReplyLength() == 0 && !fx.proto.SessionActive());
     CHECK(fx.proto.ReceivedLength() == 500 && fx.proto.ReceivedHash() == hash);
     CHECK(memcmp(fx.proto.ReceivedText(), text.data(), 500) == 0);
-    fx.proto.Finish(UploadAction::Commit, true);
+    fx.finish(UploadAction::Commit, true);
     CHECK(fx.replyCmd() == 0x44 && fx.status() == 0 && fx.proto.ReplyLength() == 7);
-    fx.proto.Finish(UploadAction::Commit, false);
+    fx.finish(UploadAction::Commit, false);
     CHECK(fx.replyCmd() == 0x44 && fx.status() == (int)UploadStatus::FlashError);
 }
 
@@ -264,7 +305,7 @@ static void testSessionLifetime() {
     fx.begin(500, 0);
     CHECK(fx.send(frame(0x05)) == UploadAction::Revert);
     CHECK(fx.proto.ReplyLength() == 0 && !fx.proto.SessionActive());
-    fx.proto.Finish(UploadAction::Revert, true);
+    fx.finish(UploadAction::Revert, true);
     CHECK(fx.replyCmd() == 0x45 && fx.status() == 0);
 }
 
@@ -291,10 +332,219 @@ static void testForeignAndMalformed() {
     CHECK(!fx.proto.SessionActive());
 }
 
-int main() {
+static void testAssemblerEdges() {
+    SysExAssembler a;
+    const uint8_t lone[] = {0xF7, 0x01, 0x02};  // F7 and data without an F0
+    a.Feed(lone, sizeof lone);
+    CHECK(!a.Ready());
+
+    const uint8_t empty[] = {0xF0, 0xF7};  // empty frame: ready, and ignored by Handle
+    a.Feed(empty, sizeof empty);
+    CHECK(a.Ready() && a.Length() == 0);
+    Fixture fx;
+    fx.proto.Handle(a.Frame(), a.Length(), 0);
+    CHECK(fx.proto.ReplyLength() == 0);
+    a.Release();
+
+    const uint8_t restart[] = {0xF0, 0x11, 0x22, 0xF0, 0x33, 0x44, 0xF7};  // a new F0 restarts
+    a.Feed(restart, sizeof restart);
+    CHECK(a.Ready() && a.Length() == 2 && a.Frame()[0] == 0x33 && a.Frame()[1] == 0x44);
+    const uint8_t clock[] = {0xF8, 0xFE};  // real-time bytes while busy leave the frame intact
+    a.Feed(clock, sizeof clock);
+    CHECK(a.Ready() && a.Length() == 2 && a.Frame()[0] == 0x33);
+    a.Release();
+}
+
+static void testHashHighBits() {
+    // A text whose hash uses bits 28-31, so the fifth u32 byte matters.
+    std::string text;
+    for (int i = 0; ; ++i) {
+        text = "high-bit text " + std::to_string(i);
+        if (Fnv1a32(text.data(), (uint32_t)text.size()) >= 0xF0000000u) break;
+    }
+    const uint32_t hash = Fnv1a32(text.data(), (uint32_t)text.size());
+    Fixture fx;
+    Bytes f = frame(0x02);
+    appendU21(f, (uint32_t)text.size());
+    appendU32(f, hash);
+    f.back() |= 0x70;  // bits above the fifth byte's low nibble are ignored
+    fx.send(f);
+    CHECK(fx.status() == 0);
+    fx.data(0, text);
+    CHECK(fx.send(frame(0x04)) == UploadAction::Commit);
+    CHECK(fx.proto.ReceivedHash() == hash);
+
+    Fixture info(defaultActiveText(), stubValidator, 0xFEDCBA98u, true);
+    info.send(frame(0x01));
+    CHECK(readU32(info.proto.Reply() + 16) == 0xFEDCBA98u);
+}
+
+static void testMaxSizeUpload() {
+    const std::string text = makeText(PresetProtocol::kMaxTextBytes);  // 409 x 240 + 144
+    Fixture fx;
+    CHECK(fx.upload(text) == UploadAction::Commit);
+    CHECK(fx.proto.ReceivedLength() == PresetProtocol::kMaxTextBytes);
+    CHECK(memcmp(fx.proto.ReceivedText(), text.data(), text.size()) == 0);
+
+    // A full 240-byte final chunk would run 96 bytes past the declared maximum.
+    Fixture over;
+    over.begin(PresetProtocol::kMaxTextBytes, 0);
+    uint32_t seq = 0;
+    for (; seq < 409; ++seq) over.data(seq, text.substr(seq * 240, 240));
+    CHECK(over.status() == 0 && over.proto.SessionActive());
+    over.data(seq, makeText(240));
+    CHECK(over.status() == (int)UploadStatus::BadLength && !over.proto.SessionActive());
+    CHECK(over.proto.ReceivedLength() == 409u * 240u);
+}
+
+static void testBeginRestartsSession() {
+    const std::string a = makeText(600), b = std::string(300, 'b');
+    Fixture fx;
+    fx.begin(600, Fnv1a32(a.data(), 600));
+    fx.data(0, a.substr(0, 240));
+    fx.data(1, a.substr(240, 240));
+    CHECK(fx.upload(b) == UploadAction::Commit);  // BEGIN mid-session discards the first
+    CHECK(fx.proto.ReceivedLength() == 300);
+    CHECK(memcmp(fx.proto.ReceivedText(), b.data(), 300) == 0);
+}
+
+static void testSeqEdges() {
+    Fixture fx;
+    fx.begin(500, 0, 0);
+    fx.data(0x3FFF, "abc");  // "one before seq 0" is not a duplicate of anything
+    CHECK(fx.status() == (int)UploadStatus::BadSeq && !fx.proto.SessionActive());
+
+    // A re-sent chunk keeps the session alive like a new one.
+    fx.begin(500, 0, 0);
+    fx.data(0, "abc", 0);
+    fx.data(0, "abc", 4000);
+    CHECK(fx.status() == 0 && fx.proto.ReceivedLength() == 3);
+    fx.proto.Tick(8999);
+    CHECK(fx.proto.SessionActive());
+    fx.proto.Tick(9000);
+    CHECK(!fx.proto.SessionActive());
+}
+
+static bool highByteValidator(const char*, uint32_t, char* err, int errLen) {
+    snprintf(err, errLen, "bad \xE9 byte");
+    return false;
+}
+
+static void testSevenBitReplies() {
+    // Bytes >= 0x80 in the active text or in a parser message never break the SysEx.
+    Fixture fx(std::string("\xC3\xA9 caf\xC3\xA9"), highByteValidator);
+    Bytes f = frame(0x06); appendU14(f, 0);
+    fx.send(f);
+    CHECK(fx.status() == 0 && fx.proto.Reply()[11] == 0x43 && fx.proto.Reply()[12] == 0x29);
+    fx.upload("x");
+    CHECK(fx.status() == (int)UploadStatus::ParseError);
+    CHECK(memcmp(fx.proto.Reply() + 6, "bad i byte", 10) == 0);  // 0xE9 & 0x7F == 'i'
+}
+
+static void testFlashFailures() {
+    Fixture fx;
+    CHECK(fx.upload("abc") == UploadAction::Commit);
+    fx.finish(UploadAction::Commit, false);
+    CHECK(fx.replyCmd() == 0x44 && fx.status() == (int)UploadStatus::FlashError);
+    CHECK(!fx.proto.SessionActive());
+    CHECK(fx.send(frame(0x05)) == UploadAction::Revert);
+    fx.finish(UploadAction::Revert, false);
+    CHECK(fx.replyCmd() == 0x45 && fx.status() == (int)UploadStatus::FlashError);
+}
+
+// End to end through the real parser, with every host frame delivered the way the
+// pedal receives it: packed into USB-MIDI packets, unwrapped per code index
+// (libdaisy/src/hid/usb_midi.cpp:163-195) and fed to the assembler one packet at a time.
+static PresetBank gCheckBank;
+static bool realValidator(const char* t, uint32_t n, char* err, int errLen) {
+    return ParsePresetBankText(t, n, gCheckBank, err, errLen, malloc, free);
+}
+
+static void deliver(Fixture& fx, SysExAssembler& as, const Bytes& body) {
+    Bytes msg(1, 0xF0);
+    msg.insert(msg.end(), body.begin(), body.end());
+    msg.push_back(0xF7);
+    uint8_t packets[512];
+    const size_t n = PackSysExUsbMidi(msg.data(), msg.size(), packets, sizeof packets);
+    CHECK(n > 0);
+    static const uint8_t kCinSize[16] = {3, 3, 2, 3, 3, 1, 2, 3, 3, 3, 3, 3, 2, 2, 3, 1};
+    for (size_t i = 0; i < n; i += 4)
+        as.Feed(packets + i + 1, kCinSize[packets[i] & 0x0F]);
+    CHECK(as.Ready());
+    if (!as.Ready()) return;
+    fx.proto.Handle(as.Frame(), as.Length(), 0);
+    checkReplyWellFormed(fx.proto);
+    as.Release();
+}
+
+static UploadAction uploadOverUsb(Fixture& fx, const std::string& text) {
+    SysExAssembler as;
+    Bytes f = frame(0x02);
+    appendU21(f, (uint32_t)text.size());
+    appendU32(f, Fnv1a32(text.data(), (uint32_t)text.size()));
+    deliver(fx, as, f);
+    CHECK(fx.status() == 0);
+    uint32_t seq = 0;
+    for (size_t off = 0; off < text.size(); off += PresetProtocol::kChunkBytes, ++seq) {
+        f = frame(0x03);
+        appendU14(f, seq);
+        const std::string chunk = text.substr(off, PresetProtocol::kChunkBytes);
+        f.insert(f.end(), chunk.begin(), chunk.end());
+        deliver(fx, as, f);
+        CHECK(fx.status() == 0);
+    }
+    f = frame(0x04);
+    const UploadAction a = fx.proto.Handle(f.data(), f.size(), 0);
+    checkReplyWellFormed(fx.proto);
+    return a;
+}
+
+static std::string readFile(const char* path) {
+    std::string s;
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return s;
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, fp)) > 0) s.append(buf, n);
+    fclose(fp);
+    return s;
+}
+
+static void testEndToEnd(const char* fixturePath) {
+    const std::string good = readFile(fixturePath);
+    CHECK(!good.empty());
+
+    Fixture fx(defaultActiveText(), realValidator);
+    CHECK(uploadOverUsb(fx, good) == UploadAction::Commit);
+    CHECK(gCheckBank.count == 2);
+    CHECK(fx.proto.ReceivedLength() == good.size());
+    CHECK(memcmp(fx.proto.ReceivedText(), good.data(), good.size()) == 0);
+
+    // A bank the parser rejects: COMMIT carries the parser's own message.
+    std::string bad = good;
+    const size_t at = bad.find("\nblinks = 1\n");
+    CHECK(at != std::string::npos);
+    bad.replace(at, 12, "\nblinks = 99\n");
+    char expected[128];
+    PresetBank scratch;
+    CHECK(!ParsePresetBankText(bad.data(), (uint32_t)bad.size(), scratch, expected,
+                               sizeof expected, malloc, free));
+    CHECK(uploadOverUsb(fx, bad) == UploadAction::None);
+    CHECK(fx.replyCmd() == 0x44 && fx.status() == (int)UploadStatus::ParseError);
+    const size_t len = strlen(expected);
+    CHECK(fx.proto.ReplyLength() == 6 + len + 1);
+    CHECK(memcmp(fx.proto.Reply() + 6, expected, len) == 0);
+}
+
+int main(int argc, char** argv) {
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s tests/fixtures/two_presets.toml\n", argv[0]);
+        return 2;
+    }
     CHECK(Fnv1a32("", 0) == 2166136261u);
     CHECK(Fnv1a32("a", 1) == 0xE40C292Cu);  // published FNV-1a test vector
     testAssembler();
+    testAssemblerEdges();
     testPacker();
     testInfo();
     testUpload();
@@ -302,5 +552,12 @@ int main() {
     testRead();
     testSessionLifetime();
     testForeignAndMalformed();
+    testHashHighBits();
+    testMaxSizeUpload();
+    testBeginRestartsSession();
+    testSeqEdges();
+    testSevenBitReplies();
+    testFlashFailures();
+    testEndToEnd(argv[1]);
     return CheckSummary("preset_protocol_test");
 }

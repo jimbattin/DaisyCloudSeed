@@ -1,6 +1,6 @@
-// Host tests for ParsePresetBank (src/preset_bank.cpp) against a fixture that is
-// independent of the live presets.toml: the baseline parses, and each mutation is
-// rejected (or accepted) with the expected message.
+// Host tests for ParsePresetBank / ParsePresetBankText (src/preset_bank.cpp) against a
+// fixture that is independent of the live presets.toml: the baseline parses, and each
+// mutation is rejected (or accepted) with the expected message.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +26,12 @@ static bool Mutate(std::string& t, const char* from, const char* to, int nth = 1
     t.replace(pos, strlen(from), to);
     return true;
 }
+
+// malloc-backed allocator that counts live blocks, to prove every allocation is released.
+static int gLiveBlocks = 0;
+static void* countingAlloc(size_t n) { ++gLiveBlocks; return malloc(n); }
+static void countingFree(void* p) { if (p) --gLiveBlocks; free(p); }
+static void* failingAlloc(size_t) { return nullptr; }
 
 static PresetBank gBank;  // 4.8 KB
 
@@ -192,6 +198,47 @@ int main(int argc, char** argv) {
         CHECK(err == expected);
         if (err != expected)
             fprintf(stderr, "  expected '%s', got '%s'\n", expected, err.c_str());
+    }
+
+    // ParsePresetBankText: the entry point for text that is not NUL-terminated (the
+    // embedded blob, memory-mapped QSPI, a USB upload buffer).
+    {
+        char errBuf[192];
+        // Exactly `length` bytes are parsed: trailing bytes (no NUL) are never read as TOML.
+        std::vector<char> buf(base.begin(), base.end());
+        const char trailer[] = "\n[[[not toml";
+        buf.insert(buf.end(), trailer, trailer + sizeof trailer - 1);
+        const std::vector<char> before = buf;
+        gBank.count = -1;
+        CHECK(ParsePresetBankText(buf.data(), (uint32_t)base.size(), gBank, errBuf,
+                                  sizeof errBuf, countingAlloc, countingFree));
+        CHECK(gBank.count == 2);
+        CHECK(buf == before);  // the source is never mutated
+        CHECK(gLiveBlocks == 0);
+        CHECK(!ParsePresetBankText(buf.data(), (uint32_t)buf.size(), gBank, errBuf,
+                                   sizeof errBuf, countingAlloc, countingFree));
+        CHECK(strncmp(errBuf, "toml:", 5) == 0);
+        CHECK(gBank.count == 0);
+        CHECK(gLiveBlocks == 0);  // released on failure too
+
+        CHECK(ParsePresetBankText(base.data(), (uint32_t)base.size(), gBank, errBuf,
+                                  sizeof errBuf, countingAlloc, countingFree));
+        CHECK(!ParsePresetBankText(base.data(), 0, gBank, errBuf, sizeof errBuf,
+                                   countingAlloc, countingFree));
+        CHECK(strstr(errBuf, "empty") != nullptr);
+        CHECK(gBank.count == 0);
+
+        // A NUL byte inside the text: the parser would otherwise stop there silently.
+        std::string withNul = base;
+        withNul[withNul.find("[[preset]]", 1) - 1] = '\0';
+        CHECK(!ParsePresetBankText(withNul.data(), (uint32_t)withNul.size(), gBank, errBuf,
+                                   sizeof errBuf, countingAlloc, countingFree));
+        CHECK(strstr(errBuf, "NUL byte") != nullptr);
+
+        CHECK(!ParsePresetBankText(base.data(), (uint32_t)base.size(), gBank, errBuf,
+                                   sizeof errBuf, failingAlloc, countingFree));
+        CHECK(strstr(errBuf, "arena too small") != nullptr);
+        CHECK(gLiveBlocks == 0);
     }
 
     return CheckSummary("preset_bank_test");

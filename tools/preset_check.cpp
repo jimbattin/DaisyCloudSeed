@@ -12,7 +12,7 @@
 #include "CloudSeed/ParameterNames.h"
 #include "preset_bank.h"
 
-static char* readFile(const char* path)
+static char* readFile(const char* path, size_t& length)
 {
     FILE* fp = fopen(path, "rb");
     if (!fp)
@@ -39,9 +39,8 @@ static char* readFile(const char* path)
         return NULL;
     }
 
-    const size_t got = fread(buffer, 1, (size_t)size, fp);
+    length = fread(buffer, 1, (size_t)size, fp);
     fclose(fp);
-    buffer[got] = '\0';
     return buffer;
 }
 
@@ -131,20 +130,20 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    char* text = readFile(path);
+    size_t length = 0;
+    char*  text   = readFile(path, length);
     if (!text)
         return 2;
 
-    // Same shape as ParsePresetText(): a scratch copy of the NUL-terminated text
-    // is the arena's first allocation, because toml_parse() mutates its input.
-    const size_t blobLen = strlen(text) + 1;
-    char*        scratch = (char*)arenaAlloc(blobLen);
-    memcpy(scratch, text, blobLen);
-    free(text);
-
+    // The same call the firmware makes through ParsePresetText(): the full file length
+    // (so a NUL byte is rejected here, as at boot), with the scratch copy as the arena's
+    // first allocation.
     PresetBank bank;
     char       err[192];
-    if (!ParsePresetBank(scratch, bank, err, sizeof err, arenaAlloc, arenaFree))
+    const bool ok = ParsePresetBankText(text, (uint32_t)length, bank, err, sizeof err,
+                                        arenaAlloc, arenaFree);
+    free(text);
+    if (!ok)
     {
         fprintf(stderr, "%s: %s\n", path, err);
         return 1;
