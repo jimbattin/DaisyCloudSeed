@@ -30,6 +30,21 @@ describe('App', () => {
     expect(screen.getByRole('slider', { name: 'DRY' }).title).toMatch(/\nOriginal: (-INF|-?\d+\.\ddB) \([\d.]+\)$/);
   });
 
+  it('flow diagram follows the page and the controls', async () => {
+    const { container } = render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'PROJECT' }));
+    await waitFor(() => expect(mainLed(container)).toBe('P01 CHORUS'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'EARLY DIFFUSER (open E.DIFF page)' }));
+    expect(screen.getByRole('button', { name: 'E.DIFF' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('heading', { name: 'EARLY DIFFUSER' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'OUTPUT' }));
+    fireEvent.mouseEnter(screen.getByRole('slider', { name: 'DRY' }).closest('.strip')!);
+    expect(screen.getByRole('heading', { name: 'OUTPUT MIX' })).toBeTruthy();
+    expect(container.querySelector('.flow-params tr.focus td')!.textContent).toBe('DRY');
+  });
+
   it('reports a browser without Web MIDI', () => {
     render(<App />);
     expect(screen.getByText(/NO WEB MIDI/)).toBeTruthy();

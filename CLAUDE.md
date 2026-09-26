@@ -578,6 +578,12 @@ with the firmware:
 - `editor/src/model/schema.ts` mirrors `kGroups`, `kToggleParams` and the presets.toml
   parameter reference. `editor/src/model/scale.ts` ports `GetScaledParameter` and
   `ValueTables` for display only
+- `editor/src/model/flow.ts` (drawn by `editor/src/components/FlowPanel.tsx`) models the signal
+  path of `ReverbChannel::Process()` / `UpdateLines()`, `DelayLine::Process()` (slot order by
+  `LateStageTap`; shelves and cutoff in the feedback path only) and the two reverse render
+  helpers in `src/cloudseed.cpp`, and its explainer texts describe them. A change to the
+  engine's routing, a new parameter, or a new pseudo-target needs the matching `BLOCKS` /
+  `EFFECT` entry there; `flow.test.ts` fails when a `PARAM_KEYS` key has no block or effect
 
 ### Parameters
 

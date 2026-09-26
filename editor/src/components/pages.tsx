@@ -1,6 +1,7 @@
 import type { Dispatch } from 'preact/hooks';
 import type { Preset } from '../model/bank';
 import { MAX_NAME_BYTES, TOTAL_LINE_COUNT, formatNorm } from '../model/bank';
+import { badgesFor } from '../model/flow';
 import { formatValue } from '../model/scale';
 import { GROUPS, KNOB_TARGETS, PAGES, PARAMS, TOGGLE_TARGETS, type PageId } from '../model/schema';
 import {
@@ -56,21 +57,15 @@ export function PageKeys({
   );
 }
 
-/** Knob and toggle slots of `preset` that target `key`, e.g. 'K1A', 'S2B'. */
-function badgesFor(preset: Preset, key: string): string[] {
-  const out: string[] = [];
-  preset.knobMap.forEach((bank, b) =>
-    bank.forEach((t, k) => t === key && out.push(`K${k + 1}${b ? 'B' : 'A'}`)),
-  );
-  preset.toggleMap.forEach((bank, b) =>
-    bank.forEach((t, k) => t === key && out.push(`S${k + 1}${b ? 'B' : 'A'}`)),
-  );
-  return out;
-}
-
 const BANK_SLOTS = 6;
 
-export function ParamPage({ page, preset, changes, dispatch }: PageProps & { page: PageId }) {
+export function ParamPage({
+  page,
+  preset,
+  changes,
+  dispatch,
+  onHover,
+}: PageProps & { page: PageId; onHover: (key: string | null) => void }) {
   const keys = PAGES.find((p) => p.id === page)!.keys;
   return (
     <div class="fader-bank">
@@ -89,6 +84,7 @@ export function ParamPage({ page, preset, changes, dispatch }: PageProps & { pag
               changes.fields[`params.${key}`] ? `${formatValue(key, was, changes.original)} (${formatNorm(was)})` : undefined
             }
             onChange={(value) => dispatch({ type: 'setParam', key, value })}
+            onHover={onHover}
           />
         );
       })}
@@ -144,7 +140,12 @@ const BANKS = [
   { letter: 'B', css: 'bank-b', name: 'Secondary', note: 'while FS2 is held' },
 ] as const;
 
-function MapPage({ preset, changes, kind, dispatch }: PageProps & { kind: 'knob' | 'toggle' }) {
+interface MapPageProps extends PageProps {
+  /** Reports the target of the slot under the pointer or focus, null on leave. */
+  onHover: (key: string | null) => void;
+}
+
+function MapPage({ preset, changes, kind, dispatch, onHover }: MapPageProps & { kind: 'knob' | 'toggle' }) {
   const map = kind === 'knob' ? preset.knobMap : preset.toggleMap;
   const originalMap = kind === 'knob' ? changes.original.knobMap : changes.original.toggleMap;
   const options = kind === 'knob' ? KNOB_TARGETS : TOGGLE_TARGETS;
@@ -171,7 +172,14 @@ function MapPage({ preset, changes, kind, dispatch }: PageProps & { kind: 'knob'
               const b = BANKS[bank];
               const edited = changes.fields[`${kind}.${bank}.${i}`];
               return (
-                <div key={bank} class={`map-slot ${b.css}`}>
+                <div
+                  key={bank}
+                  class={`map-slot ${b.css}`}
+                  onMouseEnter={() => onHover(map[bank][i])}
+                  onMouseLeave={() => onHover(null)}
+                  onFocusIn={() => onHover(map[bank][i])}
+                  onFocusOut={() => onHover(null)}
+                >
                   <span class="bank-chip" title={`${b.name}: ${b.note}`}>
                     {b.letter}
                     {edited && <span class="edit-mark" />}
@@ -199,8 +207,8 @@ function MapPage({ preset, changes, kind, dispatch }: PageProps & { kind: 'knob'
   );
 }
 
-export const KnobMapPage = (props: PageProps) => <MapPage {...props} kind="knob" />;
-export const ToggleMapPage = (props: PageProps) => <MapPage {...props} kind="toggle" />;
+export const KnobMapPage = (props: MapPageProps) => <MapPage {...props} kind="knob" />;
+export const ToggleMapPage = (props: MapPageProps) => <MapPage {...props} kind="toggle" />;
 
 export function SetupPage({ preset, changes, dispatch }: PageProps) {
   /** Tooltip naming the loaded / saved value, present only when the field was edited. */

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useReducer, useState } from 'preact/hooks';
 import { ConfirmDialog, Key, Led } from './components/controls';
 import { DevicePanel } from './components/DevicePanel';
+import { FlowPanel } from './components/FlowPanel';
 import { KnobMapPage, PageKeys, ParamPage, SetupPage, ToggleMapPage } from './components/pages';
 import { ProgramKeys } from './components/ProgramKeys';
 import { openTomlFile, projectPresets, saveTomlFile } from './io/files';
@@ -8,6 +9,7 @@ import { PresetLink } from './midi/client';
 import { ProtocolError, fnv1a32, type InfoReply } from './midi/protocol';
 import { connectPedal, isWebMidiSupported } from './midi/webMidi';
 import { docText, loadBank } from './model/bank';
+import { BLOCKS, type BlockId } from './model/flow';
 import { initialState, isDirty, presetChanges, problems, reducer, type Source } from './model/state';
 
 interface Confirm {
@@ -27,6 +29,10 @@ export function App() {
   const [status, setStatus] = useState<string | null>(null);
   const [info, setInfo] = useState<InfoReply | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  /** Parameter hovered or focused in the page controls, lit in the flow diagram. */
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  /** Block last clicked in the flow diagram; cleared by a page key. */
+  const [flowPin, setFlowPin] = useState<BlockId | null>(null);
   const supported = useMemo(isWebMidiSupported, []);
 
   const dirty = isDirty(state);
@@ -205,28 +211,53 @@ export function App() {
       </div>
 
       {doc && preset ? (
-        <div class="body">
-          <ProgramKeys
-            presets={presets}
-            changes={changes}
-            selected={selected}
-            onSelect={(i) => dispatch({ type: 'select', preset: i })}
-            onDuplicate={() => dispatch({ type: 'duplicate' })}
-            onDelete={() => dispatch({ type: 'delete' })}
-          />
-          <div>
-            <PageKeys page={page} changes={changes[selected]} onPage={(p) => dispatch({ type: 'page', page: p })} />
-            {page === 'knobs' ? (
-              <KnobMapPage preset={preset} changes={changes[selected]} dispatch={dispatch} />
-            ) : page === 'toggles' ? (
-              <ToggleMapPage preset={preset} changes={changes[selected]} dispatch={dispatch} />
-            ) : page === 'setup' ? (
-              <SetupPage preset={preset} changes={changes[selected]} dispatch={dispatch} />
-            ) : (
-              <ParamPage page={page} preset={preset} changes={changes[selected]} dispatch={dispatch} />
-            )}
+        <>
+          <div class="body">
+            <ProgramKeys
+              presets={presets}
+              changes={changes}
+              selected={selected}
+              onSelect={(i) => dispatch({ type: 'select', preset: i })}
+              onDuplicate={() => dispatch({ type: 'duplicate' })}
+              onDelete={() => dispatch({ type: 'delete' })}
+            />
+            <div>
+              <PageKeys
+                page={page}
+                changes={changes[selected]}
+                onPage={(p) => {
+                  dispatch({ type: 'page', page: p });
+                  setFlowPin(null);
+                }}
+              />
+              {page === 'knobs' ? (
+                <KnobMapPage preset={preset} changes={changes[selected]} dispatch={dispatch} onHover={setFocusKey} />
+              ) : page === 'toggles' ? (
+                <ToggleMapPage preset={preset} changes={changes[selected]} dispatch={dispatch} onHover={setFocusKey} />
+              ) : page === 'setup' ? (
+                <SetupPage preset={preset} changes={changes[selected]} dispatch={dispatch} />
+              ) : (
+                <ParamPage
+                  page={page}
+                  preset={preset}
+                  changes={changes[selected]}
+                  dispatch={dispatch}
+                  onHover={setFocusKey}
+                />
+              )}
+            </div>
           </div>
-        </div>
+          <FlowPanel
+            preset={preset}
+            page={page}
+            focusKey={focusKey}
+            pinned={flowPin}
+            onBlock={(id) => {
+              dispatch({ type: 'page', page: BLOCKS[id].page });
+              setFlowPin(id);
+            }}
+          />
+        </>
       ) : (
         <p class="hint">Load the project presets.toml, open a file, or connect the pedal and READ.</p>
       )}

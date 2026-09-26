@@ -12,6 +12,8 @@ export interface StripProps {
   onChange: (v: number) => void;
   /** Display text of the value as loaded or saved, present only when `value` differs from it. */
   original?: string;
+  /** Reports this strip's key while pointed at or focused, null on leave. */
+  onHover: (key: string | null) => void;
 }
 
 const SEED_SCALE = 1e6;
@@ -19,10 +21,18 @@ const SEED_SCALE = 1e6;
 const tooltip = (def: ParamDef, original: string | undefined) =>
   original === undefined ? def.description : `${def.description}\nOriginal: ${original}`;
 
-export function Fader({ def, value, preset, badges, onChange, original }: StripProps) {
+/** Pointer and keyboard focus handlers that report `key` to `onHover`. */
+const hoverHandlers = (key: string, onHover: (key: string | null) => void) => ({
+  onMouseEnter: () => onHover(key),
+  onMouseLeave: () => onHover(null),
+  onFocusIn: () => onHover(key),
+  onFocusOut: () => onHover(null),
+});
+
+export function Fader({ def, value, preset, badges, onChange, original, onHover }: StripProps) {
   const seed = def.entry === 'seed';
   return (
-    <div class="strip" title={tooltip(def, original)}>
+    <div class="strip" title={tooltip(def, original)} {...hoverHandlers(def.key, onHover)}>
       {original !== undefined && <span class="edit-mark" />}
       <Led text={formatValue(def.key, value, preset)} />
       <input
@@ -62,10 +72,10 @@ export function Fader({ def, value, preset, badges, onChange, original }: StripP
   );
 }
 
-export function SwitchStrip({ def, value, preset, badges, onChange, original }: StripProps) {
+export function SwitchStrip({ def, value, preset, badges, onChange, original, onHover }: StripProps) {
   const on = value >= 0.5;
   return (
-    <div class="strip" title={tooltip(def, original)}>
+    <div class="strip" title={tooltip(def, original)} {...hoverHandlers(def.key, onHover)}>
       {original !== undefined && <span class="edit-mark" />}
       <Led text={formatValue(def.key, value, preset)} />
       <div class="switch-slot">

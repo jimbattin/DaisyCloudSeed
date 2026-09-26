@@ -1,5 +1,11 @@
 /* Lexicon 480L LARC look on top of Pico CSS. No web fonts, no images. */
 
+/* Always reserve the scrollbar's width: content that grows past the window (the flow
+   explainer, a page change) must not narrow the page and shift the controls under the cursor. */
+html {
+  scrollbar-gutter: stable;
+}
+
 :root[data-theme='dark'] {
   --pico-background-color: #141516;
   --pico-color: #c9c9c9;
@@ -463,4 +469,179 @@
   flex-direction: column;
   gap: 0.3rem;
   margin: 0;
+}
+
+/* Signal flow */
+
+.larc .flow {
+  margin-top: 0.75rem;
+}
+
+.larc .flow-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.larc .flow-note {
+  flex: 1;
+  font-size: 0.65rem;
+  color: #8a8d91;
+}
+
+/* A fixed height, so hovering a block never changes the page height: a resize that moved the
+   diagram out from under the cursor ended the hover, which resized it back, in a loop. The
+   tallest explainer (E.DIFF) fits from 800 px wide up; narrower windows scroll inside it. */
+.larc .flow-explain {
+  height: 21rem;
+  overflow-y: auto;
+}
+
+.larc .flow-body {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.larc .flow svg {
+  display: block;
+  background: var(--larc-bezel);
+  border-radius: 3px;
+}
+
+.larc .flow svg text {
+  font-family: var(--larc-mono);
+}
+
+.larc .blk rect,
+.larc .blk polygon {
+  fill: #1f2124;
+  stroke: #55595e;
+  stroke-width: 1.2;
+}
+
+.larc .blk {
+  cursor: pointer;
+}
+
+.larc .blk:focus {
+  outline: none;
+}
+
+.larc .blk .t {
+  fill: var(--larc-silk);
+  font-size: 10px;
+}
+
+.larc .flow .v {
+  fill: var(--larc-led);
+  font-size: 9px;
+}
+
+.larc .bdg {
+  fill: var(--larc-led);
+  font-size: 8px;
+}
+
+.larc .blk.hl rect,
+.larc .blk.hl polygon {
+  stroke: var(--larc-led);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 3px rgba(255, 59, 31, 0.6));
+}
+
+.larc .blk.focus rect,
+.larc .blk.focus polygon {
+  fill: #2c2e32;
+}
+
+.larc .blk.off {
+  opacity: 0.4;
+}
+
+.larc .blk.off rect {
+  stroke-dasharray: 4 3;
+}
+
+.larc .blk[data-block='lines'] rect {
+  fill: none;
+}
+
+.larc .stack {
+  fill: var(--larc-bezel);
+  stroke: #3a3d41;
+}
+
+.larc .stack-mask {
+  fill: var(--larc-bezel);
+}
+
+.larc .wire {
+  fill: none;
+  stroke: #7a7e84;
+  stroke-width: 1.5;
+}
+
+.larc .wire.dim {
+  stroke-dasharray: 3 3;
+  opacity: 0.35;
+}
+
+.larc #flow-arrow path,
+.larc .dot {
+  fill: #7a7e84;
+}
+
+.larc .sum {
+  fill: #1f2124;
+  stroke: #7a7e84;
+}
+
+.larc .sum-plus {
+  fill: var(--larc-silk);
+  font-size: 12px;
+  text-anchor: middle;
+}
+
+.larc .flow-explain h4 {
+  margin: 0 0 0.3rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.1em;
+  color: var(--larc-silk);
+  display: inline-block;
+}
+
+.larc .flow-state {
+  margin-left: 0.6rem;
+  font-family: var(--larc-mono);
+  font-size: 0.7rem;
+  color: var(--larc-led);
+}
+
+.larc .flow-explain p {
+  font-size: 0.8rem;
+  margin: 0.3rem 0;
+  max-width: 70ch;
+}
+
+.larc .flow-params {
+  font-size: 0.75rem;
+  margin: 0.4rem 0 0;
+}
+
+.larc .flow-params td {
+  padding: 0.15rem 0.5rem;
+  border-bottom-color: #34363a;
+}
+
+.larc .flow-params td:nth-child(2),
+.larc .flow-params td:nth-child(3) {
+  font-family: var(--larc-mono);
+  color: var(--larc-led);
+  white-space: nowrap;
+}
+
+.larc .flow-params tr.focus td {
+  background: #2c2e32;
 }

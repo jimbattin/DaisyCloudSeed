@@ -158,6 +158,14 @@ npm test             # unit tests
 - An amber dot marks anything changed since the bank was loaded or last saved: the value
   itself, its page key, and its program key. A ring on a program key marks a preset added
   with DUP. Hovering a changed value shows its original.
+- **SIGNAL FLOW**, below the controls, draws the reverb's real signal path for the selected
+  preset: the input filters, pre-delay, early taps and diffuser, the delay-line loop with its
+  in-loop EQ and decay feedback, the output mix, and the reverse voice. It shows the preset's
+  stored values and switch states (switched-off stages dashed, silent mix paths dashed, the
+  delay-line count as stacked outlines), not the pedal's live levers. The current page's
+  stages are outlined; hovering a fader or map row lights its exact stage, and clicking a stage
+  opens its page. The panel below the diagram explains the focused stage and what each of its
+  parameters does. The **FLOW** key collapses it, and the browser remembers that.
 - Edits change only the edited value in the text: an unedited bank saves byte-identically,
   so its hash matches the pedal's. SAVE and UPLOAD first check the bank with the same rules
   as `make presets-check`, with the same messages.
