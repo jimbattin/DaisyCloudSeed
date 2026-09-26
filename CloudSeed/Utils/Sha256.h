@@ -37,7 +37,6 @@
 
 #ifndef SHA256_H
 #define SHA256_H
-#include <vector>
 
 class SHA256
 {
@@ -62,7 +61,9 @@ protected:
 	uint32 m_h[8];
 };
 
-std::vector<unsigned char> sha256(unsigned char* input, int len);
+// Writes the 32-byte (SHA256::DIGEST_SIZE) digest of `input` into `digest`.
+// No allocation: the reverb calls this while it runs.
+void sha256(const unsigned char* input, int len, unsigned char* digest);
 
 #define SHA2_SHFR(x, n)    (x >> n)
 #define SHA2_ROTR(x, n)   ((x >> n) | (x << ((sizeof(x) << 3) - n)))

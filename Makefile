@@ -78,10 +78,15 @@ presets-check: $(BUILD_DIR)/preset_check
 .PHONY: presets-check
 
 # Host unit tests for the host-portable modules (knob/toggle/footswitch state
-# machines, preset parser). No firmware build needed.
+# machines, preset parser) and the reverb engine. No firmware build needed.
 HOST_TEST_CXXFLAGS = -std=gnu++14 -O1 -Wall -I. -Isrc -Ithird_party/tomlc99
 HOST_TESTS = $(BUILD_DIR)/knob_bank_test $(BUILD_DIR)/toggle_bank_test \
-             $(BUILD_DIR)/footswitch_gestures_test $(BUILD_DIR)/preset_bank_test
+             $(BUILD_DIR)/footswitch_gestures_test $(BUILD_DIR)/preset_bank_test \
+             $(BUILD_DIR)/engine_alloc_test
+
+# The engine test compiles the whole CloudSeed library for the host.
+CLOUDSEED_HOST_SOURCES = $(wildcard CloudSeed/*.cpp CloudSeed/*/*.cpp)
+CLOUDSEED_HEADERS      = $(wildcard CloudSeed/*.h CloudSeed/*/*.h)
 
 $(BUILD_DIR)/knob_bank_test: tests/knob_bank_test.cpp tests/check.h src/knob_bank.h src/preset_bank.h | $(BUILD_DIR)
 	$(HOSTCXX) $(HOST_TEST_CXXFLAGS) -o $@ $<
@@ -92,12 +97,16 @@ $(BUILD_DIR)/footswitch_gestures_test: tests/footswitch_gestures_test.cpp tests/
 $(BUILD_DIR)/preset_bank_test: tests/preset_bank_test.cpp tests/check.h src/preset_bank.cpp src/preset_bank.h \
 		CloudSeed/DelayLineCount.h $(BUILD_DIR)/toml_host.o | $(BUILD_DIR)
 	$(HOSTCXX) $(HOST_TEST_CXXFLAGS) -o $@ tests/preset_bank_test.cpp src/preset_bank.cpp $(BUILD_DIR)/toml_host.o
+$(BUILD_DIR)/engine_alloc_test: tests/engine_alloc_test.cpp tests/check.h $(CLOUDSEED_HOST_SOURCES) \
+		$(CLOUDSEED_HEADERS) | $(BUILD_DIR)
+	$(HOSTCXX) $(HOST_TEST_CXXFLAGS) -o $@ tests/engine_alloc_test.cpp $(CLOUDSEED_HOST_SOURCES)
 
 test: $(HOST_TESTS)
 	./$(BUILD_DIR)/knob_bank_test
 	./$(BUILD_DIR)/toggle_bank_test
 	./$(BUILD_DIR)/footswitch_gestures_test
 	./$(BUILD_DIR)/preset_bank_test tests/fixtures/two_presets.toml
+	./$(BUILD_DIR)/engine_alloc_test
 
 .PHONY: test
 

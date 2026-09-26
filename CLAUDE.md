@@ -39,6 +39,7 @@ DaisyCloudSeed/
 │   ├── toggle_bank_test.cpp
 │   ├── footswitch_gestures_test.cpp
 │   ├── preset_bank_test.cpp
+│   ├── engine_alloc_test.cpp  # CloudSeed engine: SetParameter()/Process() never allocate
 │   └── fixtures/two_presets.toml  # Parser fixture (Chorus + Through the Looking Glass)
 ├── docs/
 │   ├── PERFORMANCE.md         # Record of applied performance/correctness fixes (with file/line anchors)
@@ -186,7 +187,7 @@ goes live once it moves `kKnobMoveThreshold` (0.01 of travel) from its snapshot.
 moving) position over `kKnobGlideBlocks` (50) audio blocks = 50 ms, landing exactly on the pot.
 The glide exists because engine parameters are not smoothed downstream
 (`ReverbChannel::SetParameter` assigns the output levels directly,
-`CloudSeed/ReverbChannel.h:319-330`), so a step would click. After the glide the knob writes its
+`CloudSeed/ReverbChannel.h:317-328`), so a step would click. After the glide the knob writes its
 own position whenever that changes by `kKnobApplyEpsilon` (0.001), which keeps ADC noise off the
 engine.
 
@@ -542,7 +543,7 @@ allocating - the two uses never overlap in time.
 **ReverbChannel** ([CloudSeed/ReverbChannel.h](CloudSeed/ReverbChannel.h)):
 - Builds `TotalLineCount` (5) delay lines for the mono implementation
   ([CloudSeed/DelayLineCount.h](CloudSeed/DelayLineCount.h)); `SetParameter(LineCount)` clamps the
-  active count to 1..`TotalLineCount` (`CloudSeed/ReverbChannel.h:214-224`)
+  active count to 1..`TotalLineCount` (`CloudSeed/ReverbChannel.h:211-221`)
 - Contains delay lines, diffusers, modulation
 
 **DelayLine** ([CloudSeed/DelayLine.h](CloudSeed/DelayLine.h)):
@@ -561,7 +562,7 @@ allocating - the two uses never overlap in time.
 
 ```bash
 # Rebuild all libraries (libcloudseed, DaisySP, libdaisy).
-# Makefile:103-106 runs `clean all` in each, so this is a full rebuild of all three.
+# Makefile:113-116 runs `clean all` in each, so this is a full rebuild of all three.
 make libs
 
 # Or build individually:
@@ -625,7 +626,7 @@ audio.
 make test
 ```
 
-Builds four host executables into `build/` with `HOSTCXX` (`Makefile:80-101`) and runs them;
+Builds five host executables into `build/` with `HOSTCXX` (`Makefile:80-111`) and runs them;
 no ARM toolchain or firmware build is involved. Each prints `<suite>: N checks, 0 failed` and
 exits non-zero on any failed `CHECK()` ([tests/check.h](tests/check.h)):
 - `knob_bank_test` - `KnobBank` parking, move threshold, 50-block takeover glide, apply
@@ -638,6 +639,10 @@ exits non-zero on any failed `CHECK()` ([tests/check.h](tests/check.h)):
 - `preset_bank_test tests/fixtures/two_presets.toml` - `ParsePresetBank()` on a two-preset
   fixture (Chorus + Through the Looking Glass), then a table of single-line mutations that
   must each be rejected with a specific message, plus two that must be accepted
+- `engine_alloc_test` - the whole CloudSeed library compiled for the host, with counting
+  replacements for `operator new` and `custom_pool_allocate`: after boot, every parameter is
+  swept 0 → 1 → 0.5 through `SetParameter()` with a `Process()` block after each write, and
+  must cause zero heap and zero pool allocations (see "Performance Architecture")
 
 The parser test deliberately uses its own fixture, not presets.toml, so editing preset values
 never breaks `make test`; the live file stays covered by `make presets-check` and the build
@@ -904,8 +909,8 @@ constexpr int TotalLineCount = 5;  // CloudSeed/DelayLineCount.h:14
 `TotalLineCount` is the single definition of how many `DelayLine`s `ReverbChannel` builds, and
 everything that depends on it follows automatically:
 - `ReverbChannel::SetParameter(LineCount)` clamps the active count to 1..`TotalLineCount`
-  (`CloudSeed/ReverbChannel.h:214-224`), so no caller can make `Process` loop past the lines that
-  exist (`:403`, `:406`). The lower bound matters too: `ReverbController::LoadPreset()` re-applies
+  (`CloudSeed/ReverbChannel.h:211-221`), so no caller can make `Process` loop past the lines that
+  exist (`:401`, `:404`). The lower bound matters too: `ReverbController::LoadPreset()` re-applies
   the stored `LineCount`, which is 0 at boot until the audio callback sets the real count
 - `readLineCount()` (`src/preset_bank.cpp:195-210`) validates `default_delay_lines` /
   `max_delay_lines` against it, so `make` rejects a preset asking for more lines than exist,
@@ -1165,18 +1170,17 @@ through (`:448-451`).
     processing
   - Sets trigger flags for heavy operations
   - No flash writes or preset loading
-  - **Not allocation-free**: every knob or toggle write goes through
-    `ReverbChannel::SetParameter`, and several targets rebuild engine state with heap allocation
-    inside the audio interrupt. `LineDelay`, `LineDecay`, `LineModAmount`, `LineModRate`,
-    `LateDiffusionModAmount`, `LateDiffusionModRate`, `DelaySeed` and `CrossSeed` run
-    `UpdateLines()` → `AudioLib::ShaRandom::Generate()` (SHA-256 plus several `std::vector`s,
-    `CloudSeed/AudioLib/ShaRandom.cpp:10-49`); `TapSeed`, `DiffusionSeed` and
-    `PostDiffusionSeed` re-seed a diffuser the same way; `TapCount`, `TapLength`, `TapGain`,
-    `TapDecay` and `isReverse` rebuild the taps in `MultitapDiffuser::Update()` (local vectors,
-    `CloudSeed/MultitapDiffuser.h:153-173`). Each runs once per write, i.e. up to once per block
-    while a knob turns - in the default map KNOB_5 (`TapDecay`), KNOB_6 (`LineDecay`), and the
-    secondary KNOB_4 / KNOB_5 (`LineModAmount` / `LineModRate`). The heap grows from `end` in
-    RAM_D2 (see Memory Usage)
+  - **Allocation-free**: every knob or toggle write goes through `ReverbChannel::SetParameter`
+    inside the audio interrupt, so no parameter update may touch the heap or the SDRAM pool;
+    `make test` enforces this (`tests/engine_alloc_test.cpp`). The seed-derived values every
+    stage draws its delays, gains and modulation from live in fixed-size
+    `AudioLib::SeedSeries<N>` members (`CloudSeed/AudioLib/ShaRandom.h:15-57`): SHA-256 runs only
+    when a seed actually changes (`TapSeed`, `DiffusionSeed`, `DelaySeed`, `PostDiffusionSeed`),
+    a `CrossSeed` write only re-blends the two cached series, and `UpdateLines()` and
+    `MultitapDiffuser::Update()` read the cached values into fixed arrays. The per-write cost
+    of the default knob targets (KNOB_5 `TapDecay`, KNOB_6 `LineDecay`, secondary KNOB_4/5
+    `LineModAmount`/`LineModRate`) is therefore bounded arithmetic - see
+    [docs/PERFORMANCE.md](docs/PERFORMANCE.md) §9
 - **Main loop**: Non-critical background tasks
   - Preset switching (includes buffer clearing)
   - Flash memory writes (settings, user preset save/restore)
@@ -1273,7 +1277,7 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
   (`libdaisy/core/STM32H750IB_sram.lds:244-251`), which is where `DelayLine`'s `tempBuffer`,
   `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:52-54`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 206,860 B of 480KB (42.09%). Of that, the
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 214,380 B of 480KB (43.62%). Of that, the
   embedded `presets.toml` blob is 48,860 B (`build/presets_toml.o` - it carries the
   per-preset `[preset.knob_map]`, `[preset.toggle_map]`, `[preset.params.reverse]` and
   `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 8,081 B
@@ -1406,7 +1410,7 @@ changes; do not restate them here.
 make clean         # Clean previous build
 make libs          # Rebuild libdaisy, DaisySP, and libcloudseed (clean all)
 make presets-check # Validate presets.toml without building (also run automatically by `make`)
-make test          # Host unit tests (knob/toggle/footswitch state machines, preset parser)
+make test          # Host unit tests (knob/toggle/footswitch state machines, preset parser, engine allocations)
 make               # Build CloudSeed
 make program-boot  # One time: flash the Daisy bootloader (BOOT_SRAM prerequisite)
 make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run)

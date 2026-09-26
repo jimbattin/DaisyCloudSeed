@@ -35,10 +35,7 @@
 * SUCH DAMAGE.
 */
 
-#include <memory>
-#include <vector>
 #include <cstring>
-#include <fstream>
 #include "Sha256.h"
 
 const unsigned int SHA256::sha256_k[64] = //UL = uint32
@@ -153,17 +150,10 @@ void SHA256::final(unsigned char *digest)
 	}
 }
 
-std::vector<unsigned char> sha256(unsigned char* input, int len)
+void sha256(const unsigned char* input, int len, unsigned char* digest)
 {
-	unsigned char digest[SHA256::DIGEST_SIZE];
-	memset(digest, 0, SHA256::DIGEST_SIZE);
-
 	SHA256 ctx;
 	ctx.init();
 	ctx.update(input, len);
 	ctx.final(digest);
-
-	std::vector<unsigned char> output;
-	output.assign(digest, digest + SHA256::DIGEST_SIZE);
-	return output;
 }

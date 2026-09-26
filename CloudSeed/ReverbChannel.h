@@ -41,13 +41,12 @@ namespace CloudSeed
 		MultitapDiffuser multitap;
 		AllpassDiffuser diffuser;
 		vector<DelayLine*> lines;
-		AudioLib::ShaRandom rand;
+		AudioLib::SeedSeries<TotalLineCount * 3> lineSeeds;  // delay, mod amount, mod rate per line
 		AudioLib::Hp1 highPass;
 		AudioLib::Lp1 lowPass;
 		float* tempBuffer;
 		float* lineOutBuffer;
 		float* outBuffer;
-		int delayLineSeed;
 		int postDiffusionSeed;
 
 		// Used the the main process loop
@@ -83,14 +82,12 @@ namespace CloudSeed
 			for (auto value = 0; value < (int)Parameter::Count; value++)
 				this->parameters[value] = 0.0f;
 
-			// A defined starting state. LoadPreset() sets every one of these, but reads
-			// some first: SetParameter(DiffusionEnabled) compares against the old value,
-			// and UpdateLines() reads delayLineSeed when LineDelay is applied, before
-			// DelaySeed. The ReverbController is heap-allocated, so nothing is zeroed.
+			// A defined starting state. LoadPreset() sets every one of these, but
+			// SetParameter(DiffusionEnabled) compares against the old value first.
+			// The ReverbController is heap-allocated, so nothing is zeroed.
 			diffuserEnabled = false;
 			highPassEnabled = false;
 			lowPassEnabled = false;
-			delayLineSeed = 0;
 			postDiffusionSeed = 0;
 			crossSeed = 0.0;
 			lineCount = TotalLineCount;
@@ -299,7 +296,7 @@ namespace CloudSeed
 				diffuser.SetSeed((int)value);
 				break;
 			case Parameter::DelaySeed:
-				delayLineSeed = (int)value;
+				lineSeeds.SetSeed((int)value);
 				UpdateLines();
 				break;
 			case Parameter::PostDiffusionSeed:
@@ -310,6 +307,7 @@ namespace CloudSeed
 			case Parameter::CrossSeed:
 
 				crossSeed = channelLr == ChannelLR::Right ? value : 0;
+				lineSeeds.SetCrossSeed(crossSeed);
 				multitap.SetCrossSeed(value);
 				diffuser.SetCrossSeed(value);
 				UpdateLines();
@@ -465,15 +463,14 @@ namespace CloudSeed
 			auto lateDiffusionModAmount = Ms2Samples(parameters[(int)Parameter::LateDiffusionModAmount]);
 			auto lateDiffusionModRate = parameters[(int)Parameter::LateDiffusionModRate];
 
-			auto delayLineSeeds = ShaRandom::Generate(delayLineSeed, (int)lines.size() * 3, crossSeed);
-			int count = (int)lines.size();
+			int count = (int)lines.size();  // TotalLineCount; lineSeeds holds 3 values per line
 
 			for (int i = 0; i < count; i++)
 			{
-				auto modAmount = lineModAmount * (0.7 + 0.3 * delayLineSeeds[i + count]);
-				auto modRate = lineModRate * (0.7 + 0.3 * delayLineSeeds[i + 2 * count]) / samplerate;
+				auto modAmount = lineModAmount * (0.7 + 0.3 * lineSeeds[i + count]);
+				auto modRate = lineModRate * (0.7 + 0.3 * lineSeeds[i + 2 * count]) / samplerate;
 				
-				auto delaySamples = (0.5 + 1.0 * delayLineSeeds[i]) * lineDelaySamples;
+				auto delaySamples = (0.5 + 1.0 * lineSeeds[i]) * lineDelaySamples;
 				if (delaySamples < modAmount + 2) // when the delay is set really short, and the modulation is very high
 					delaySamples = modAmount + 2; // the mod could actually take the delay time negative, prevent that! -- provide 2 extra sample as margin of safety
 

@@ -15,7 +15,7 @@ feedback multiply (`CloudSeed/DelayLine.h:199`), `ModulatedAllpass::Process*`'s 
 (`CloudSeed/AudioLib/Biquad.h:57-61`). Once a value enters the subnormal range (~1e-38),
 the Cortex-M7 FPU takes a multi-cycle microcoded slow path per operation instead of
 single-cycle. The codebase already had three independent, incomplete, ad-hoc manual
-guards for this (`ReverbChannel.h:375-382`, `AudioLib/Hp1.h:63-66`, `AudioLib/Lp1.h:59-62`)
+guards for this (`ReverbChannel.h:373-380`, `AudioLib/Hp1.h:63-66`, `AudioLib/Lp1.h:59-62`)
 that don't cover the delay-line/allpass feedback state where the problem originates.
 
 **Fix**: set the FPU's Flush-to-Zero bit (FPSCR bit 24) once at boot, in `main()` before
@@ -145,6 +145,47 @@ unnecessary.
 **Fix**: deleted `audioBypassBuffer` and its copy loop; both bypass output paths
 (`state.bypass` branch and the preset-change-in-progress branch) now write
 `out[0][i] = in[0][i];` directly.
+
+## 9. Allocation-free parameter updates (seed series cached)
+
+**Files**: `CloudSeed/AudioLib/ShaRandom.h`, `CloudSeed/AudioLib/ShaRandom.cpp`,
+`CloudSeed/Utils/Sha256.h`, `CloudSeed/Utils/Sha256.cpp`, `CloudSeed/MultitapDiffuser.h`,
+`CloudSeed/AllpassDiffuser.h`, `CloudSeed/ReverbChannel.h`; test `tests/engine_alloc_test.cpp`
+
+Knob and toggle targets are applied inside the audio callback, and 17 of the 47 parameters
+allocated on the heap when written. `ShaRandom::Generate()` built its result from
+`std::vector`s, and each `sha256()` call returned a new one. `ReverbChannel::UpdateLines()`
+regenerated the delay-line seed series (4 SHA-256 digests) on every `LineDelay`, `LineDecay`,
+`LineModAmount`, `LineModRate` and `LateDiffusionMod*` write, although the series depends only
+on `DelaySeed` and `CrossSeed`. `MultitapDiffuser::Update()` built three temporary vectors for
+every `TapCount`, `TapLength`, `TapGain`, `TapDecay` and `isReverse` write, and `Process()`
+copy-assigned them. Measured on the host with counting allocators, over six writes each:
+`LineDecay` made 210 heap allocations, `TapDecay` 18, and `CrossSeed` 2508 (it re-hashed every
+stage's series, and each `DelayLine` diffuser hashed twice via `SetSeed` then `SetCrossSeed`).
+
+**Fix**:
+- `sha256()` writes into a caller buffer, and `ShaRandom::Generate(seed, out, count)` fills a
+  caller array. The algorithm is unchanged: each digest hashes the first 8 bytes of the
+  previous one.
+- New `AudioLib::SeedSeries<N>` (`ShaRandom.h`) holds the series of `seed` and of `~seed` in
+  fixed arrays plus their cross-seed blend. It re-hashes only when the seed actually changes,
+  and a `CrossSeed` write only re-blends. `MultitapDiffuser` (`2 * MaxTaps` values),
+  `AllpassDiffuser` (`MaxStageCount * 3`) and `ReverbChannel` (`TotalLineCount * 3`, the line
+  seeds) each own one. `UpdateLines()` reads the cached line seeds and never hashes.
+- `MultitapDiffuser`'s tap gains, positions, their `*Temp` copies and `tapData` are
+  `MaxTaps`-sized arrays. `Update()` clamps the tap count to 1..`MaxTaps`, a limit
+  `GetScaledParameter` already keeps.
+
+**Result**: `tests/engine_alloc_test.cpp` (part of `make test`) sweeps every parameter
+through `SetParameter()` and `Process()` after boot and requires zero heap and zero pool
+allocations; it failed for 17 parameters before this change. The output is unchanged:
+rendering all ten presets while sweeping the seeds, `CrossSeed`, `LineDecay`, `TapDecay`,
+`TapCount`, `LineModAmount` and `isReverse` is byte-identical to the old engine at host
+`-O2`, and at `-O3 -ffast-math -mfma -fno-tree-vectorize`. With the host auto-vectorizer on, the
+two differ only by float reassociation, at most 92 dB below peak; the Cortex-M7's
+scalar-only FPU gives GCC nothing to vectorize with. Code size: `-O3` now inlines the smaller
+`MultitapDiffuser::Update()` into each of its `SetParameter` cases, adding 7.5 KB of SRAM
+(`ReverbChannel::SetParameter` 8,128 → 16,416 B).
 
 ## Verification performed
 

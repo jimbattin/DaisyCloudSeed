@@ -1,50 +1,35 @@
 
 #include <climits>
+#include <cstring>
 #include "ShaRandom.h"
 #include "../Utils/Sha256.h"
 
 namespace AudioLib
 {
-	using namespace std;
-
-	vector<float> ShaRandom::Generate(long long seed, int count)
+	void ShaRandom::Generate(long long seed, float* out, int count)
 	{
-		vector<unsigned char> byteList;
-		auto iterations = count * sizeof(unsigned int) / (256 / 8) + 1;
-		auto byteArr = (unsigned char*)&seed;
-		vector<unsigned char> bytes(byteArr, byteArr + 8);
+		// Each digest yields eight 32-bit values. The next digest hashes only the
+		// first 8 bytes of the previous one, starting from the 8 bytes of the seed
+		// itself: that is the original CloudSeed algorithm, kept bit for bit.
+		static_assert(sizeof(seed) == 8, "the seed is hashed as 8 bytes");
+		const int valuesPerDigest = SHA256::DIGEST_SIZE / sizeof(unsigned int);
 
-		for (size_t i = 0; i < iterations; i++)
-		{
-			bytes = sha256(&bytes[0], 8);
-			for (auto b : bytes)
-				byteList.push_back(b);
-		}
-
-		auto intArray = (unsigned int*)(&byteList[0]);
-		vector<float> output;
+		unsigned char input[8];
+		unsigned char digest[SHA256::DIGEST_SIZE];
+		memcpy(input, &seed, sizeof input);
 
 		for (int i = 0; i < count; i++)
 		{
-			unsigned int val = intArray[i];
-			float doubleVal = val / (float)UINT_MAX;
-			output.push_back(doubleVal);
+			const int slot = i % valuesPerDigest;
+			if (slot == 0)
+			{
+				sha256(input, sizeof input, digest);
+				memcpy(input, digest, sizeof input);
+			}
+
+			unsigned int val;
+			memcpy(&val, digest + slot * sizeof val, sizeof val);
+			out[i] = val / (float)UINT_MAX;
 		}
-
-		return output;
-	}
-
-	vector<float> ShaRandom::Generate(long long seed, int count, float crossSeed)
-	{
-		auto seedA = seed;
-		auto seedB = ~seed;
-		auto seriesA = Generate(seedA, count);
-		auto seriesB = Generate(seedB, count);
-
-		vector<float> output;
-		for (int i = 0; i < count; i++)
-			output.push_back(seriesA[i] * (1 - crossSeed) + seriesB[i] * crossSeed);
-
-		return output;
 	}
 }
