@@ -33,6 +33,10 @@ namespace CloudSeed
 				filters.push_back(new ModulatedAllpass((int)delayBufferSize, 100));
 			}
 
+			// Update() and SetSamplerate() read these before any preset sets them:
+			// start from the filters' own defaults (100-sample delay, no modulation).
+			delay = 100;
+			modRate = 0.0f;
 			seeds.SetSeed(23456);
 			Update();
 			Stages = 1;
