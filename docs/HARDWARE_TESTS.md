@@ -198,4 +198,4 @@ Copy one row per validated revision.
 
 | Date | Commit | Tester | S1-S4 | H1-H9 | H10 | H11 | Notes |
 |---|---|---|---|---|---|---|---|
-| | | | | | | | |
+| 2026-09-26 | 89dc63a | jbattin | pass | pass | pass | pass | Baseline c5609ec (last pre-USB). S3 SAME-CALLS, 1780 -> 1766 lines. S4: DTCM +15,136 B (USB stack), SRAM +11,108 B, RAM_D2_DMA +988 B (MIDI rx/tx), SDRAM +627,424 B (toml_arena 512 KiB + gUploadText 96 KiB + gUploadCheck). H10 flood: 4,250 INFO, 85 READ-all, no errors. |
