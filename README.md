@@ -133,6 +133,34 @@ The protocol is documented for host authors in [docs/USB_MIDI.md](docs/USB_MIDI.
 pedal from Linux without a web page, use `tools/usb_preset_host.py`; the full on-pedal
 validation checklist is [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md).
 
+## Preset editor (browser)
+
+[editor/](editor/) is a local web app, styled after the Lexicon 480L LARC, that edits every
+field of a preset bank and talks to the pedal over Web MIDI. It runs in current Chrome and
+Firefox and needs Node 22.12 or newer:
+```
+cd editor
+npm install
+npm run dev          # http://localhost:5174
+npm test             # unit tests
+```
+- **PROJECT** loads the repo's presets.toml, **OPEN** loads any `.toml` file, and **SAVE**
+  downloads the bank. Where the file lands is set by the browser's download setting ("ask where
+  to save" lets you overwrite presets.toml).
+- **CONNECT** / **READ** read the pedal's active bank. **UPLOAD** sends the edited bank and
+  **REVERT** returns the pedal to its built-in bank. Both reboot the pedal and erase the
+  sounds saved on it. Firefox asks for MIDI permission on the first CONNECT.
+- Program keys 01-16 select a preset. **DUP** appends a copy at the end, and **DEL** removes
+  one; there is no reordering. The page keys show faders with the engine's real units, the
+  knob and toggle maps, and the name, LED and delay-line settings.
+- Edits change only the edited value in the text: an unedited bank saves byte-identically,
+  so its hash matches the pedal's. SAVE and UPLOAD first check the bank with the same rules
+  as `make presets-check`, with the same messages.
+- If the pedal does not come back after an upload or revert, the panel shows `... PRESS
+  CONNECT TO VERIFY`. The bank is already stored. If CONNECT then reports `pedal not found`,
+  reload the page, or re-plug the pedal if its USB name came back garbled (see
+  `/proc/asound/cards`).
+
 ## Saving and restoring presets on the pedal
 
 presets.toml, or the bank uploaded over USB, is the **factory** version of every preset and

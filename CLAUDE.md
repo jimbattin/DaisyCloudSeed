@@ -55,6 +55,9 @@ DaisyCloudSeed/
 ├── third_party/tomlc99/   # Vendored TOML parser (MIT, commit in README.txt)
 ├── tools/                 # preset_check.cpp (host-side presets.toml validator),
 │                          # usb_preset_host.py (Linux USB-MIDI test host for docs/HARDWARE_TESTS.md)
+├── editor/                # Browser preset editor (Preact + Vite, Web MIDI; Node >= 22.12):
+│                          # src/midi/ protocol v1 client, src/model/ bank text model +
+│                          # validator mirroring src/preset_bank.cpp, src/components/ LARC UI
 ├── CLAUDE.md              # This file - agent-facing project documentation
 ├── README.md              # User-facing control table and build/flash instructions
 ├── license.txt            # License
@@ -550,6 +553,31 @@ sequencing, timeouts and error replies - plus an end-to-end upload of the parser
 USB-MIDI packets and the real parser; [tests/stored_bank_test.cpp](tests/stored_bank_test.cpp)
 covers `ValidStoredBankText()`; `ParsePresetBankText()` is covered in `preset_bank_test`. None
 of them involve libdaisy.
+
+**Browser editor** ([editor/](editor/), user docs in README.md "Preset editor (browser)"): a
+Preact + Vite app (`npm run dev`, http://localhost:5174; `npm test`, Vitest) that is a
+second host for this protocol, for Chrome and Firefox with one code path. Keep it in step
+with the firmware:
+- `editor/src/midi/protocol.ts` / `client.ts` port `src/preset_protocol.h` (INFO offsets as in
+  `tools/usb_preset_host.py`). `PresetLink` is stop-and-wait, and resends only INFO, READ and
+  DATA. `upload()` / `revert()` return `null` when the pedal cannot be verified after its
+  reboot: `waitForReboot()` gave up after 20 s, or INFO went unanswered. COMMIT `Ok` has
+  already stored the bank at that point
+- `editor/src/midi/webMidi.ts` finds the pedal by `/daisy/i` in the port name or manufacturer,
+  and after a reboot re-polls `requestMIDIAccess()` (no `onstatechange`). Each poll attempt is
+  capped at 2 s: in Firefox a Web MIDI call on a port that vanished during the reboot stayed
+  pending forever, which hung the upload. Observed 2026-09-26: an occasional re-enumeration
+  returns a garbled USB product string (`/proc/asound/cards` shows `USB-Audio - Љ`), so no host
+  finds "Daisy" until the pedal is re-plugged. `[INFERENCE]` libdaisy serves every string
+  descriptor from one shared static buffer, `USBD_StrDesc` (`libdaisy/src/usbd/usbd_desc.c:289`)
+- `editor/src/model/bank.ts` `loadBank()` re-implements `ParsePresetBankText()` with the
+  exact messages. Its tests port `kRejects` / `kAccepts` from `tests/preset_bank_test.cpp`
+  verbatim, so a new parser rule or message needs the same change there. Edits patch only the
+  value token of one line, so an unedited bank round-trips byte-identically (same FNV-1a as
+  the pedal)
+- `editor/src/model/schema.ts` mirrors `kGroups`, `kToggleParams` and the presets.toml
+  parameter reference. `editor/src/model/scale.ts` ports `GetScaledParameter` and
+  `ValueTables` for display only
 
 ### Parameters
 
@@ -1617,6 +1645,7 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
   [src/usb_midi_link.h](src/usb_midi_link.h)
 - Hardware validation checklist: [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md), driven by
   `tools/usb_preset_host.py`
+- Browser preset editor: [editor/](editor/) (`npm run dev`; see "USB-MIDI preset upload")
 
 ### Key Concepts
 - Buffer size: 48 samples
