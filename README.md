@@ -46,8 +46,9 @@ You need:
 - A host C/C++ compiler (`gcc`/`g++` by default, or set `HOSTCC`/`HOSTCXX`): `make` builds a
   small host tool that validates presets.toml before it is embedded in the firmware
 
-libdaisy, DaisySP and Terrarium are git submodules, pinned to exact commits (libdaisy v6.0.0,
-DaisySP V1.0.0). The build fails without them, so clone recursively:
+libdaisy, DaisySP and Terrarium are git submodules, pinned to exact commits (libdaisy v8.1.0,
+DaisySP V1.0.0), and libdaisy has submodules of its own (CMSIS, the STM32 HAL). The build fails
+without them, so clone recursively:
 ```
 git clone --recurse-submodules https://github.com/jimbattin/DaisyCloudSeed.git
 cd DaisyCloudSeed
@@ -70,8 +71,10 @@ again after a submodule update. `make test` runs the host unit tests.
 
 Then flash your terrarium with the following commands (or use the [Electrosmith Web Programmer](https://electro-smith.github.io/Programmer/))
 **NOTE** This fork (of a fork) uses BOOT_SRAM, so the Daisy bootloader must be flashed once
-(`make program-boot`) before the app. `program-dfu` only finds the Seed while the bootloader is
-waiting: press RESET, then hold BOOT until the LED blinks rapidly.
+(`make program-boot`) before the app, and again whenever libdaisy ships a newer one: this tree
+flashes bootloader v6.4, which includes libdaisy's QSPI write-protect fix. `program-dfu` only
+finds the Seed while the bootloader is waiting: press RESET, then hold BOOT until the LED
+blinks rapidly.
 ```
 # from the repo root, using USB
 make program-boot
@@ -92,7 +95,8 @@ make                 # validates presets.toml, then builds
 make program-dfu
 ```
 `make` runs the file through the same parser the pedal uses and refuses to build firmware if it
-fails: unknown or misplaced parameters, a missing group, an unknown preset or top-level key, a
+fails: a non-ASCII character anywhere (the file must be plain ASCII, comments included),
+unknown or misplaced parameters, a missing group, an unknown preset or top-level key, a
 bad range, TOML syntax errors, or a document too large for the boot-time parse arena. So a
 broken preset file can no longer reach the pedal - where the only symptom would be **both**
 LEDs blinking together at 5 Hz with no audio.

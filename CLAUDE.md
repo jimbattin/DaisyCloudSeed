@@ -146,10 +146,10 @@ FOOTSWITCH_1 + FOOTSWITCH_2 held 5 s: restore the current preset to its presets.
 ```
 
 **Footswitch gestures** ([src/footswitch_gestures.h](src/footswitch_gestures.h)): libdaisy's `Switch` is
-an 8-bit shift register that `Debounce()` shifts at most once per ms (`switch.cpp:39`), i.e. once
+an 8-bit shift register that `Debounce()` shifts at most once per ms (`switch.cpp:34`), i.e. once
 per 1 ms audio block: `Pressed()` is `state_ == 0xff` and clears
 1 ms after a release, while `FallingEdge()` is `state_ == 0x80` and only fires 7 ms later
-(`libdaisy/src/hid/switch.h:70-79`, `switch.cpp:44-47`). `FootswitchGestures` tracks both
+(`libdaisy/src/hid/switch.h:68-74`, `switch.cpp:39-41`). `FootswitchGestures` tracks both
 switches with private `bypassHeld` / `presetHeld` flags, each set on `Pressed()` and cleared
 only on that switch's `FallingEdge()`, so a contact bounce mid-hold (which never produces `0x80`)
 cannot drop a hold, and FS2's 6 ms tail before the edge stays in bank 1 (`PresetHeld()`).
@@ -334,7 +334,7 @@ All presets allow 5 delay lines except "Through the Looking Glass"
 
 **Boot-time memory**: the parser allocates exclusively from a 512 KB bump arena carved from the
 head of `custom_pool` (`src/sdram_pool.cpp:48-57`), used between `hw.Init()` and
-`new CloudSeed::ReverbController(...)`. Peak measured usage is 142,912 B on x86-64 (smaller on
+`new CloudSeed::ReverbController(...)`. Peak measured usage is 143,048 B on x86-64 (smaller on
 32-bit ARM); the arena is abandoned - not freed - so the SDRAM pool starts at offset 0 for the
 reverb. Permanent SDRAM cost of the TOML system: zero.
 
@@ -569,11 +569,15 @@ git clone --recurse-submodules https://github.com/jimbattin/DaisyCloudSeed.git
 git submodule update --init --recursive
 ```
 
-The superproject pins exact commits: libdaisy `v6.0.0`, DaisySP `V1.0.0`, Terrarium `main` at
+The superproject pins exact commits: libdaisy `v8.1.0`, DaisySP `V1.0.0`, Terrarium `main` at
 `cd6c80d`. The `branch =` values in `.gitmodules` are those tag names, not branches, so never use
-`git submodule update --remote`: it would move the submodules off the pinned commits. `--recursive`
-also fetches `libdaisy/tests/googletest` and `DaisySP/DaisySP-LGPL`; the firmware needs neither
-(DaisySP's `make` builds the LGPL library only if it is present, `DaisySP/Makefile:227-230`).
+`git submodule update --remote`: it would move the submodules off the pinned commits.
+`--recursive` is required: libdaisy v7+ moved CMSIS, the STM32H7 HAL and the USB device library
+into nested submodules (`libdaisy/.gitmodules`), and neither libdaisy nor the app compiles
+without them. It also fetches `libdaisy/tests/googletest` and `DaisySP/DaisySP-LGPL`, which the
+firmware does not need (DaisySP's `make` builds the LGPL library only if it is present,
+`DaisySP/Makefile:227-230`). A full recursive checkout of libdaisy is about 330 MB of working
+tree plus 480 MB of git objects; `--shallow-submodules` on the clone reduces the git part.
 
 Tools: the Daisy Toolchain (`arm-none-eabi-gcc`, `make`, `dfu-util`; this tree builds with Arm GNU
 Toolchain 13.3.Rel1) and a host `gcc`/`g++` (`HOSTCC`/`HOSTCXX`, `Makefile:50-51`) - plain `make`
@@ -621,7 +625,9 @@ with the parser's message on stderr if the file is rejected), `--print-knob-map`
 
 `make` cannot produce firmware from a presets.toml the parser would reject: the embedded blob
 (`$(BUILD_DIR)/presets_toml.o`) depends on `$(BUILD_DIR)/presets.valid`, whose recipe is
-`preset_check --validate presets.toml` (`Makefile:53-70`). Validation covers TOML syntax,
+`preset_check --validate presets.toml` (`Makefile:53-70`). Validation covers non-ASCII bytes
+(any byte >= 0x80, comments included, rejected with its line and column before tomlc99 sees the
+text: `checkAscii()`, `src/preset_bank.cpp:811-837`), TOML syntax,
 missing/unknown/misplaced parameters, unknown preset- and root-level keys, out-of-range
 scalars (a parameter value that is non-finite or outside 0..1; `max_delay_lines` /
 `default_delay_lines` that are not whole numbers 1..5 or where the default exceeds the max;
@@ -629,7 +635,7 @@ scalars (a parameter value that is non-finite or outside 0..1; `max_delay_lines`
 (unknown group/parameter, wrong group, a runtime parameter, or - for toggles - a parameter not
 in `kToggleParams`), and a document too large for the boot parse arena - the host tool allocates
 through a replica of `TOML_ARENA_SIZE` (512 KB, 8-byte aligned, no reuse), so `presets.toml: 10
-presets valid, boot arena peak 142912 of 524288 bytes` is the same peak the pedal sees. Host
+presets valid, boot arena peak 143048 of 524288 bytes` is the same peak the pedal sees. Host
 pointers are 64-bit, so the reported peak over-estimates the 32-bit target: a pass here implies
 a fit on hardware. A near-miss should be fixed by raising `TOML_ARENA_SIZE` (`src/sdram_pool.cpp:48`),
 not by loosening the host check.
@@ -660,7 +666,9 @@ exits non-zero on any failed `CHECK()` ([tests/check.h](tests/check.h)):
   restore chord, bounces, and a falling edge without a prior `Pressed()`
 - `preset_bank_test tests/fixtures/two_presets.toml` - `ParsePresetBank()` on a two-preset
   fixture (Chorus + Through the Looking Glass), then a table of single-line mutations that
-  must each be rejected with a specific message, plus two that must be accepted
+  must each be rejected with a specific message (non-ASCII bytes in a value and in a comment
+  among them), a check of the line and column reported for a non-ASCII byte, and two
+  mutations that must be accepted
 - `engine_alloc_test` - the whole CloudSeed library compiled for the host, with counting
   replacements for `operator new` and `custom_pool_allocate`: after boot, every parameter is
   swept 0 → 1 → 0.5 through `SetParameter()` with a `Process()` block after each write, and
@@ -691,9 +699,13 @@ make program-boot
 make program-dfu
 ```
 
-Both targets come from `libdaisy/core/Makefile:343-347` and require `dfu-util`. A `BOOT_SRAM`
-build cannot be flashed with `make program` (openocd) - libdaisy errors out on that path
-(`libdaisy/core/Makefile:335-336`). Same procedure as `README.md:71-80`.
+Both targets come from `libdaisy/core/Makefile:348-352` and require `dfu-util`. `program-boot`
+flashes `BOOT_BIN`, the bootloader shipped with libdaisy (`dsy_bootloader_v6_4-intdfu-2000ms.bin`
+at v8.1.0, `libdaisy/core/Makefile:220`); a pedal still running an older bootloader keeps working
+but misses its fixes (v6.3+ carries libdaisy's QSPI write-protect fix), so re-run it after a
+libdaisy bump that ships a new one. A `BOOT_SRAM` build cannot be flashed with `make program`
+(openocd) - libdaisy errors out on that path (`libdaisy/core/Makefile:340-341`). Same procedure
+as `README.md:72-83`.
 
 ### Compiler Configuration
 
@@ -871,6 +883,9 @@ direct_mix = 0.0
 
 Rules the parser enforces (a violation fails `make` before the blob is embedded; if one were
 ever flashed it would stop boot and blink both LEDs):
+- presets.toml must be plain ASCII, comments included (`line L, column C: non-ASCII byte 0xNN`):
+  tomlc99 passes plain `char`s to `isdigit()`, which is undefined for bytes >= 0x80, so
+  `ParsePresetBank()` rejects them before parsing (`src/preset_bank.cpp:811-837`, called at `:848`)
 - All eight `[preset.params.*]` parameter groups must be present, each containing exactly its
   own keys - 46 parameters total. Group membership is defined by `kGroups` in
   [src/preset_bank.cpp](src/preset_bank.cpp) and mirrored by the reference comment at the top of
@@ -1007,7 +1022,7 @@ with the block period:
 - `kLongHoldBlocks` (`src/footswitch_gestures.h:24`): 5000 blocks = the 5 s save / restore holds
 - `KNOB_SMOOTHING_COEFF` (`src/cloudseed.cpp:48`): a per-callback one-pole coefficient, ~20 ms
   at 1 kHz
-- libdaisy's `Switch::Debounce()` shifts at most once per ms (`libdaisy/src/hid/switch.cpp:39`):
+- libdaisy's `Switch::Debounce()` shifts at most once per ms (`libdaisy/src/hid/switch.cpp:34`):
   with longer blocks it shifts once per block, so the 8-shift press latch and 7-shift release
   edge stretch with the block
 
@@ -1255,6 +1270,13 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
 - Ensure submodules are initialized: `git submodule update --init --recursive`
 - Rebuild libraries: `make libs` (runs `clean all` in CloudSeed, DaisySP, and libdaisy)
 - Clean build: `make clean && make`
+- Expected warnings on a clean `make`, none from `src/` or `CloudSeed/`: `array subscript has
+  type 'char'` from the vendored `third_party/tomlc99/toml.c` (`isdigit()` on a `char`;
+  unreachable, because `ParsePresetBank()` rejects every byte >= 0x80 before tomlc99 runs),
+  `FP registers might be clobbered despite 'interrupt' attribute`
+  from libdaisy's `Default_Handler` (`libdaisy/core/startup_stm32h750xx.c:1560`, an infinite loop
+  that never returns), newlib's `_close`/`_read`/... `is not implemented and will always fail`,
+  and `LOAD segment with RWX permissions` at link time
 
 **Audio Issues**:
 - Check buffer size (48 samples typical)
@@ -1297,16 +1319,17 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
   `build/cloudseed.map`). The TOML parse arena adds nothing: it is carved from `custom_pool`
   and abandoned before the reverb allocates
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
-  (`libdaisy/core/STM32H750IB_sram.lds:244-251`), which is where `DelayLine`'s `tempBuffer`,
+  (`libdaisy/core/STM32H750IB_sram.lds:239-250`), which is where `DelayLine`'s `tempBuffer`,
   `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:52-54`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 210,124 B of 480KB (42.75%). Of that, the
-  embedded `presets.toml` blob is 48,860 B (`build/presets_toml.o` - it carries the
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 222,100 B of 480KB (45.19%). Of that, the
+  embedded `presets.toml` blob is 48,996 B (`build/presets_toml.o` - it carries the
   per-preset `[preset.knob_map]`, `[preset.toggle_map]`, `[preset.params.reverse]` and
   `[preset.params.delay_lines]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 8,081 B
-- DTCMRAM: 27,988 B of 128KB (21.35%) — includes the 4,804 B `gPresets` bank (40 B of that per
-  preset slot is the knob + toggle maps: 24 B knobs, 16 B toggles), the 6,676 B
-  `gStorage` user-preset store (`PersistentStorage` keeps a defaults copy and a live copy of the 3,332 B
-  `UserPresets`), and the 208 B `gSaveSnapshot`; RAM_D2_DMA: 16,968 B of 32KB (51.78%)
+- DTCMRAM: 30,284 B of 128KB (23.10%) — includes the 4,804 B `gPresets` bank (40 B of that per
+  preset slot is the knob + toggle maps: 24 B knobs, 16 B toggles), the 6,720 B `gStorage`
+  (6,676 B of it is the user-preset `PersistentStorage`, which keeps a defaults copy and a live
+  copy of the 3,332 B `UserPresets`), and the 208 B `gSaveSnapshot`; RAM_D2_DMA: 16,968 B of
+  32KB (51.78%)
 - QSPI: `Settings` in sector 0 (offset 0) and `UserPresets` in sector 1 (offset 0x1000), both
   inside the 256 KB below the bootloader's program area at 0x90040000
 
@@ -1451,7 +1474,7 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 ### Key Concepts
 - Buffer size: 48 samples
 - Sample rate: 48kHz (typical)
-- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena; peak 142,912 B)
+- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena; peak 143,048 B)
 - Delay lines: 5 (mono Terrarium), toggled per preset between `default_delay_lines` and
   `max_delay_lines` in presets.toml (default SWITCH_1, `[preset.toggle_map]`)
 - Presets: 10, defined in presets.toml, `gPresets.count` at runtime (max `kMaxPresets` = 16)

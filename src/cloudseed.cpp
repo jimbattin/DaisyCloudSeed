@@ -305,7 +305,7 @@ static float gReverbInputBuffer[AUDIO_BUFFER_SIZE];
 
 static void processFootswitches() {
     // Each accessor is read exactly once per callback: libdaisy's edge flags are only
-    // valid for the update in which they occur (hid/switch.h:62-66).
+    // valid for the update in which they occur (libdaisy/src/hid/switch.h:57-61).
     const FootswitchEvents ev = gFootswitches.Update(
         hw.switches[BYPASS_FOOTSWITCH].Pressed(), hw.switches[BYPASS_FOOTSWITCH].FallingEdge(),
         hw.switches[PRESET_FOOTSWITCH].Pressed(), hw.switches[PRESET_FOOTSWITCH].FallingEdge());

@@ -1,6 +1,6 @@
 // Host tests for FootswitchGestures (src/footswitch_gestures.h), driven through a
 // model of libdaisy's Switch: an 8-bit shift register clocked once per block, with
-// Pressed() == 0xff and FallingEdge() == 0x80 (libdaisy/src/hid/switch.h:70-79).
+// Pressed() == 0xff and FallingEdge() == 0x80 (libdaisy/src/hid/switch.h:68-74).
 // A press latches on the 8th down block; a release edge fires on the 7th up block.
 #include <stdint.h>
 

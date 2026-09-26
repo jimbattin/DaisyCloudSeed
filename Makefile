@@ -7,7 +7,7 @@ export APP_TYPE = BOOT_SRAM
 
 # Sources
 # Source lists must be set before including the core Makefile: it evaluates
-# vpath directives at parse time (libdaisy/core/Makefile:273-279).
+# vpath directives at parse time (libdaisy/core/Makefile:278-284).
 CPP_SOURCES = src/cloudseed.cpp src/preset_bank.cpp src/pedal_leds.cpp src/sdram_pool.cpp \
               src/pedal_storage.cpp
 C_SOURCES += third_party/tomlc99/toml.c

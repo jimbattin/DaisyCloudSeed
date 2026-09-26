@@ -808,6 +808,34 @@ bool parseRoot(const toml_table_t* root, PresetBank& bank, char* err, int errLen
     return true;
 }
 
+// tomlc99 passes plain `char`s to isdigit() (third_party/tomlc99/toml.c:1604, :2027,
+// :2035, :2169), which is undefined for bytes >= 0x80. Rejecting them up front,
+// comments included, keeps the parser on defined behaviour; the file only needs ASCII.
+bool checkAscii(const char* toml, char* err, int errLen)
+{
+    int line = 1;
+    int column = 1;
+    for (const unsigned char* p = (const unsigned char*)toml; *p; p++)
+    {
+        if (*p >= 0x80)
+        {
+            snprintf(err, errLen, "line %d, column %d: non-ASCII byte 0x%02X", line,
+                     column, *p);
+            return false;
+        }
+        if (*p == '\n')
+        {
+            line++;
+            column = 1;
+        }
+        else
+        {
+            column++;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 bool ParsePresetBank(char* toml, PresetBank& bank, char* err, int errLen,
@@ -816,6 +844,9 @@ bool ParsePresetBank(char* toml, PresetBank& bank, char* err, int errLen,
     bank.count = 0;
     if (errLen > 0)
         err[0] = '\0';
+
+    if (!checkAscii(toml, err, errLen))
+        return false;
 
     toml_set_memutil(alloc, dealloc);
 

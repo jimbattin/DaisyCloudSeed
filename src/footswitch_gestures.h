@@ -9,8 +9,8 @@
 //   FS1 + FS2 hold 5 s restore the current preset to factory (fires while held)
 //
 // libdaisy's Switch is an 8-bit shift register clocked once per audio block
-// (libdaisy/src/hid/switch.cpp:44-47): Pressed() is state_ == 0xff, FallingEdge() is
-// state_ == 0x80 (libdaisy/src/hid/switch.h:70-79). Each hold is engaged on Pressed()
+// (libdaisy/src/hid/switch.cpp:39-41): Pressed() is state_ == 0xff, FallingEdge() is
+// state_ == 0x80 (libdaisy/src/hid/switch.h:68-74). Each hold is engaged on Pressed()
 // and released only on FallingEdge(), so a contact bounce during a hold (which never
 // produces 0x80) cannot drop it, and the 6 ms between Pressed() clearing and
 // FallingEdge() firing still counts as held (FS2: stays in the secondary bank).

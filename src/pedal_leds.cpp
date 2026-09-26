@@ -22,7 +22,7 @@ static BlinkState gPresetBlink;
 static bool     gConfirmActive  = false;  // main loop only
 static uint32_t gConfirmStartMs = 0;
 
-void LedsInit(dsy_gpio_pin led1Pin, dsy_gpio_pin led2Pin) {
+void LedsInit(Pin led1Pin, Pin led2Pin) {
     gLed1.Init(led1Pin, false);
     gLed1.Update();
 

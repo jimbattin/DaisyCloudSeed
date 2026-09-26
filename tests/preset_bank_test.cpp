@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -110,6 +111,9 @@ static const Reject kRejects[] = {
      "preset 0: led_pause_ms must be a whole number 0..60000"},
     {"name = \"Chorus\"", "name = \"0123456789012345678901234567890X\"", 1,
      "preset 0: name longer than 31 bytes"},
+    // Non-ASCII anywhere is rejected with its position, in a value or a comment.
+    {"name = \"Chorus\"", "name = \"Chor\xC3\xBCs\"", 1, "non-ASCII byte 0xC3"},
+    {"[preset.knob_map]", "[preset.knob_map]  # \xE2\x80\x94", 1, "non-ASCII byte 0xE2"},
 };
 
 struct Accept {
@@ -171,6 +175,23 @@ int main(int argc, char** argv) {
         CHECK(Mutate(t, "name = \"Chorus\"", "name = \"0123456789012345678901234567890\""));
         CHECK(Parse(t, gBank, err));
         CHECK(strcmp(gBank.presets[0].name, longest) == 0);
+    }
+
+    // A non-ASCII byte is reported at its 1-based line and column.
+    {
+        std::string t = base;
+        CHECK(Mutate(t, "name = \"Chorus\"", "name = \"Chor\xC3\xBCs\""));
+        const size_t at = t.find('\xC3');
+        const size_t lineStart = t.rfind('\n', at) + 1;
+        const int line = 1 + (int)std::count(t.begin(), t.begin() + at, '\n');
+        const int column = 1 + (int)(at - lineStart);
+        char expected[64];
+        snprintf(expected, sizeof expected, "line %d, column %d: non-ASCII byte 0xC3", line,
+                 column);
+        CHECK(!Parse(t, gBank, err));
+        CHECK(err == expected);
+        if (err != expected)
+            fprintf(stderr, "  expected '%s', got '%s'\n", expected, err.c_str());
     }
 
     return CheckSummary("preset_bank_test");

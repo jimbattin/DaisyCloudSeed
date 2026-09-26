@@ -59,7 +59,8 @@ fixes an incidental double-precision promotion: the cached value is computed wit
 
 ## 4. Remove per-tap integer modulo in `MultitapDiffuser::Process`
 
-**File**: `CloudSeed/MultitapDiffuser.h:135` (pre-fix line)
+**File**: `CloudSeed/MultitapDiffuser.h` at the time; the loop now lives in
+`CloudSeed/MultitapDiffuser.cpp:49-50`
 
 Inside the per-sample tap loop (up to `MaxTaps = 50` taps):
 `auto idx = (index + tapPos[j]) % len;`. `len` is a one-second delay buffer size in
@@ -198,7 +199,7 @@ above.
 
 Several engine members were read before anything had written them. The `ReverbController` is
 heap-allocated and each `DelayLine` is placement-new'd into the SDRAM pool, whose
-`.sdram_bss` section is `NOLOAD` and never zeroed (`libdaisy/core/STM32H750IB_sram.lds:172`),
+`.sdram_bss` section is `NOLOAD` and never zeroed (`libdaisy/core/STM32H750IB_sram.lds:169`),
 so those reads returned whatever the memory held:
 - `SetParameter(DiffusionEnabled)` and `SetParameter(LateDiffusionEnabled)` compare the new
   value with the old `diffuserEnabled` / `DelayLine::DiffuserEnabled` to decide whether to clear

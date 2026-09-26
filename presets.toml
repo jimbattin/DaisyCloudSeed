@@ -9,6 +9,8 @@
 # Rules enforced by the parser. `make` refuses to build firmware from a file that
 # breaks one; if such a file ever reached the pedal it would stop boot and blink
 # both LEDs at 5 Hz:
+#   * Plain ASCII only, comments included: a byte >= 0x80 (an em dash, an
+#     accented letter) is rejected, with its line and column.
 #   * Preset order is the order below. The index is stored in QSPI flash, so
 #     reordering or deleting presets invalidates saved settings (bump
 #     SETTINGS_VERSION in src/pedal_storage.cpp in the same change).

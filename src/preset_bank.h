@@ -65,7 +65,8 @@ struct PresetBank {
     PresetData presets[kMaxPresets];
 };
 
-// Parses `toml` (NUL-terminated, MUTATED in place) into `bank`. Every parser
+// Parses `toml` (NUL-terminated, MUTATED in place) into `bank`. The text must be
+// plain ASCII: any byte >= 0x80 is rejected before parsing. Every parser
 // allocation goes through alloc/dealloc and is released before this returns.
 // Returns true on success; on failure sets bank.count = 0 and writes a
 // NUL-terminated message into err.

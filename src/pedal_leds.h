@@ -14,7 +14,7 @@ struct BlinkPattern {
 };
 
 // Boot: configures LED1 (active indicator) and LED2 (preset indicator), both off.
-void LedsInit(dsy_gpio_pin led1Pin, dsy_gpio_pin led2Pin);
+void LedsInit(daisy::Pin led1Pin, daisy::Pin led2Pin);
 // LED1 lit while the effect is active.
 void SetBypassLed(bool bypass);
 // Pushes both LEDs to their pins. Once audio runs only the audio callback may call
