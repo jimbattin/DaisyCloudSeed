@@ -24,7 +24,7 @@ DaisyCloudSeed/
 ├── Makefile               # App build (BOOT_SRAM; dependent libraries built with the `libs` target)
 ├── cloudseed.cpp          # Main application code (hardware, controls, audio callback)
 ├── knob_bank.h            # KnobBank absolute knob takeover (park, 50 ms glide, track; host-portable)
-├── preset_footswitch.h    # PresetFootswitch FS2 tap/hold state machine (host-portable)
+├── footswitch_gestures.h  # FootswitchGestures: FS1/FS2 tap, hold, 5 s save and restore chords (host-portable)
 ├── preset_bank.h          # PresetBank/PresetData types + knob-map types + ParsePresetBank()
 ├── preset_bank.cpp        # TOML -> PresetBank parser (host-portable, no libdaisy)
 ├── presets.toml           # THE preset data - all 10 presets, parsed at boot
@@ -86,6 +86,8 @@ CloudSeed is based on the open-source CloudSeed VST plugin by ValdemarOrn, modif
 - Extensive modulation and diffusion
 - 48MB SDRAM buffer allocation
 - Preset and bypass state persisted to QSPI flash
+- Per-preset user save (FS1 held 5 s) and factory restore (FS1 + FS2 held 5 s), stored in QSPI
+  and discarded when a different firmware image is flashed
 - Equal-power makeup gain on the wet path
 - FPU flush-to-zero enabled at boot (denormal stall elimination)
 
@@ -98,8 +100,8 @@ secondary (`_b`) target per knob; the secondary bank is selected while **the pre
 (FOOTSWITCH_2) is held**. The shipped default map in every preset reproduces the historical assignment:
 
 ```cpp
-// Knob read: cloudseed.cpp:588-592; scan + dispatch: cloudseed.cpp:479-488;
-// applyKnobTarget(): cloudseed.cpp:315-351
+// Knob read: cloudseed.cpp:710-714; scan + dispatch: cloudseed.cpp:601-610;
+// applyKnobTarget(): cloudseed.cpp:406-436
 //                        primary (_a)                      secondary (_b)
 KNOB_1: output.DryOut                        | input.PreDelay
 KNOB_2: output.EarlyOut                      | input.HighPass   (+ HiPassEnabled on first touch)
@@ -113,29 +115,46 @@ SWITCH_2: Bloom -> Parameter::isReverse, reverses multitap gain order
 SWITCH_3: Reverse delay on/off (enables the reverse voice; SWITCH_4 selects its destination,
           the knob mapped to "reverse.delay" sets its window length; see CloudSeed/ReverseDelay.h)
 SWITCH_4: Reverse routing (off = reverse into reverb wet path, on = direct output mix; only active with SWITCH_3 on)
-FOOTSWITCH_1: Bypass toggle on RELEASE (persisted to flash 3 s later); independent of FOOTSWITCH_2
+FOOTSWITCH_1 tap: Bypass toggle on RELEASE (persisted to flash 3 s later)
+FOOTSWITCH_1 held 5 s: save the current engine state into the current preset (fires while held;
+          the release does not toggle bypass)
 FOOTSWITCH_2 tap: Preset cycle on RELEASE
 FOOTSWITCH_2 held: secondary knob bank; the release cycles the preset only if no secondary
-          knob wrote a value during the hold (PresetFootswitch, preset_footswitch.h)
+          knob wrote a value during the hold
+FOOTSWITCH_1 + FOOTSWITCH_2 held 5 s: restore the current preset to its presets.toml values
+          (fires while held). Once both have been down together neither release toggles
+          bypass or cycles the preset (FootswitchGestures, footswitch_gestures.h)
 ```
 
-**Preset footswitch** ([preset_footswitch.h](preset_footswitch.h)): libdaisy's `Switch` is an
-8-bit shift register clocked once per audio block: `Pressed()` is `state_ == 0xff` and clears
+**Footswitch gestures** ([footswitch_gestures.h](footswitch_gestures.h)): libdaisy's `Switch` is
+an 8-bit shift register clocked once per audio block: `Pressed()` is `state_ == 0xff` and clears
 1 ms after a release, while `FallingEdge()` is `state_ == 0x80` and only fires 7 ms later
-(`libdaisy/src/hid/switch.h:70-79`, `switch.cpp:44-47`). `PresetFootswitch` is a class whose
-private `held` flag (read through `Held()`) is set on `Pressed()` and cleared only on
-`FallingEdge()`, so a contact bounce mid-hold (which never produces `0x80`) cannot drop the
-secondary bank, and the 6 ms tail before the edge stays in bank 1. The callback calls
-`MarkEdited()` when a bank-1 `Scan()` returns at least one write (`cloudseed.cpp:492-493`),
+(`libdaisy/src/hid/switch.h:70-79`, `switch.cpp:44-47`). `FootswitchGestures` tracks both
+switches with private `bypassHeld` / `presetHeld` flags, each set on `Pressed()` and cleared
+only on that switch's `FallingEdge()`, so a contact bounce mid-hold (which never produces `0x80`)
+cannot drop a hold, and FS2's 6 ms tail before the edge stays in bank 1 (`PresetHeld()`).
+`Update()` is called once per callback with all four accessors and returns a
+`FootswitchEvents` struct:
+- `toggleBypass`: FS1's release edge, unless its 5 s save already fired or the press was part of
+  a chord
+- `cyclePreset`: FS2's release edge, unless a secondary knob wrote since the press
+  (`MarkEdited()`) or the press was part of a chord
+- `savePreset`: FS1 held alone for `kLongHoldBlocks` (5000 blocks = 5 s), counted from its
+  `Pressed()` latch; fires once per hold, while still held
+- `restorePreset`: both held for `kLongHoldBlocks` consecutive blocks; fires once, while held
+
+A **chord** starts on the first block both holds are set and lasts until both are released, so
+presses and releases may be arbitrarily staggered: while it lasts neither release fires, and a
+chord shorter than 5 s does nothing at all. An FS1 hold that turns into a chord no longer counts
+toward a save. A falling edge without a prior `Pressed()` is ignored. The callback calls
+`MarkEdited()` when a bank-1 `Scan()` returns at least one write (`cloudseed.cpp:614-615`),
 i.e. a secondary knob moved past `kKnobMoveThreshold` and wrote; brushing a knob below the
 threshold does not cancel the preset change, and entering bank 1 re-parks (zero writes), so
-pressing FS2 is never itself an edit. `Update()` returns true on the release edge of a hold
-with no `MarkEdited()` since the press and then clears both private flags; a falling edge
-without a prior `Pressed()` is ignored. The bank is derived from `Held()` after `Update()` in
-the same callback (`cloudseed.cpp:592`), so the block that ends a hold already scans in bank 0.
-FOOTSWITCH_1 is a plain `FallingEdge()` bypass toggle; both footswitches are handled in
-`processFootswitches()` (`cloudseed.cpp:452-469`), which reads each accessor once per callback
-because edge flags are only valid for the update in which they occur.
+pressing FS2 is never itself an edit. The bank is derived from `PresetHeld()` after `Update()`
+in the same callback (`cloudseed.cpp:714`), so the block that ends a hold already scans in
+bank 0. `processFootswitches()` (`cloudseed.cpp:566-591`) reads each accessor once per callback,
+because edge flags are only valid for the update in which they occur, and turns the events into
+`state.bypass`, `state.triggerPresetChange`, `gSaveRequested`, and `state.triggerPresetRestore`.
 
 **Knob take-over** ([knob_bank.h](knob_bank.h)): knobs are **absolute** - once a knob has taken
 over, its position *is* the parameter value - but **parked** across transitions.
@@ -165,23 +184,24 @@ next turn glides its primary target to the knob's position - a smooth jump, by d
 deliberately no pickup/crossing rule (it reintroduces the dead-zone feel).
 
 `KnobBank::Scan()` is the whole per-callback decision, called from `updateEngineControls()`
-(`cloudseed.cpp:479-488`): it re-parks on a bank change (`bank != activeBank`), when
-`state.knobResetPending` is set (by the main loop before `cyclePreset()`,
-`cloudseed.cpp:710-716`), or on the first call; a re-parking call returns zero writes. It never
+(`cloudseed.cpp:601-610`): it re-parks on a bank change (`bank != activeBank`), when
+`state.knobResetPending` is set (by `loadPresetGated()` before the load,
+`cloudseed.cpp:337-347`), or on the first call; a re-parking call returns zero writes. It never
 runs while `state.presetChangeInProgress` is set (the callback passes audio through and returns
-first, `cloudseed.cpp:583-586`) because the re-park must not straddle a `state.knobMap` rewrite;
+first, `cloudseed.cpp:705-708`) because the re-park must not straddle a `state.knobMap` rewrite;
 `knobResetPending` simply stays set until the load completes.
-The glide start values come from `knobTargetValue()` (`cloudseed.cpp:356-376`), read for the
+The glide start values come from `knobTargetValue()` (`cloudseed.cpp:441-461`), read for the
 active bank every callback: knob values are stored verbatim in `parameters[]` by `SetParameter`,
 so `GetAllParameters()` read-back is exact; the `reverse.delay` pseudo-target has no
-`parameters[]` slot and is tracked in `state.reverseDelayNorm` instead. A disabled input filter
+`parameters[]` slot and is tracked in `state.reverseDelayNorm` instead (set by `loadPreset()`
+from the preset's `[preset.params.reverse] delay`, then by the knob). A disabled input filter
 reports its open end instead of its stored cutoff (`HighPass` 0.0 while `HiPassEnabled` < 0.5,
 `LowPass` 1.0 while `LowPassEnabled` < 0.5): the engine skips it, so that is what is heard, and
 `applyKnobTarget()` enables it on the first write, so the glide opens from there rather than
 stepping to the stored cutoff (about 2 kHz in Chorus and Dark Plate).
 
 `main()` settles the knob one-poles for 200 ms between `hw.StartAdc()` and `hw.StartAudio()`
-(`cloudseed.cpp:689-702`). `AnalogControl` starts at 0.0 and only converges while
+(`cloudseed.cpp:824-837`). `AnalogControl` starts at 0.0 and only converges while
 `ProcessAnalogControls()` runs, which otherwise first happens inside the audio callback: without
 the settle loop the first snapshot would capture ~5 % of each real knob position and the
 settling ramp itself would be read as a deliberate turn at every power-up.
@@ -189,15 +209,18 @@ settling ramp itself would be read as a deliberate turn at every power-up.
 **ADC smoothing**: libdaisy's default `AnalogControl` slew computes to `coeff_ = 1.0` at this
 callback rate (`libdaisy/src/hid/ctrl.cpp:16` with a 1 kHz update and the 0.002 s default),
 i.e. no filtering. `main()` re-tunes every knob to `KNOB_SMOOTHING_COEFF` (0.05, ~20 ms) at
-`cloudseed.cpp:669-670`. Nothing may call `hw.SetAudioBlockSize()` / `hw.SetAudioSampleRate()`
+`cloudseed.cpp:800-801`. Nothing may call `hw.SetAudioBlockSize()` / `hw.SetAudioSampleRate()`
 afterwards: both re-run `SetHidUpdateRates()` and overwrite the coefficient.
 
 ### Presets
 
 All preset data lives in [presets.toml](presets.toml) at the repo root. The file is embedded
 into the firmware image by `presets_toml.s` (`.incbin`, lands in `.rodata` → SRAM) and parsed
-once at boot into the static `gPresets` bank (`cloudseed.cpp:90`). There is no filesystem and
-no external storage: editing presets means editing the TOML and reflashing.
+once at boot into the static `gPresets` bank (`cloudseed.cpp:101`). There is no filesystem:
+presets.toml is the **factory** version of every preset and is never modified on the pedal.
+Changing a factory preset means editing the TOML and reflashing; a sound saved on the pedal
+(FS1 held 5 s) is stored separately in QSPI and overrides its preset's engine values until it is
+restored (see "User preset save / factory restore" below).
 
 1. Chorus (1 blink)
 2. Dull Echos (2 blinks)
@@ -215,8 +238,11 @@ All presets allow 5 delay lines except "Through the Looking Glass"
 
 **Preset System Architecture**:
 - Each `[[preset]]` carries `name`, `blinks`, `led_on_ms`, `led_off_ms`, `led_pause_ms`,
-  `max_delay_lines`, a `[preset.knob_map]` table, and eight `[preset.params.*]` groups holding
-  all 45 file-controlled parameters (see the parameter reference in the TOML header)
+  `max_delay_lines`, a `[preset.knob_map]` table, eight `[preset.params.*]` groups holding
+  all 45 file-controlled parameters (see the parameter reference in the TOML header), and a
+  ninth group `[preset.params.reverse]` whose only key `delay` is the normalized reverse-window
+  length (`PresetData::reverseDelay`; 0.4771 ≈ 500 ms, the value every shipped preset uses). It
+  has no `Parameter` slot, so `parseParams()` parses it separately from `kGroups`
 - `[preset.knob_map]` requires all twelve `knobN_a` / `knobN_b` keys. Each value is a quoted
   `"group.Parameter"` naming a parameter of that same group, or the pseudo-target
   `"reverse.delay"`. Parsed by `parseKnobMap()`/`parseKnobTarget()`
@@ -228,24 +254,26 @@ All presets allow 5 delay lines except "Through the Looking Glass"
 - Applied with `CloudSeed::ReverbController::LoadPreset()`
   (`CloudSeed/ReverbController.h:47`), which copies every slot except `LineCount`/`isReverse`
   and then re-applies all 47 through `SetParameter`
-- Cycles using modulo operator: `(currentPreset + 1) % gPresets.count` (`cloudseed.cpp:266`)
+- Cycles using modulo operator: `(currentPreset + 1) % gPresets.count` (`cloudseed.cpp:864`)
 - Preset index is persisted to QSPI flash, so **the order in presets.toml is frozen**;
-  reordering or deleting entries requires bumping `SETTINGS_VERSION` (`cloudseed.cpp:52`)
-- `loadPreset()` (`cloudseed.cpp:245-263`) is the only reader of `gPresets` after boot: besides
-  calling `LoadPreset()`, it copies the preset's `knobMap`, `maxDelayLines` and blink timings
-  into `PedalState` and sets `state.outputLevelsDirty`. The audio callback and
-  `updateBlinkState()` read only those cached copies
+  reordering or deleting entries requires bumping `SETTINGS_VERSION` (`cloudseed.cpp:49`)
+- `loadPreset()` (`cloudseed.cpp:312-334`) is the only reader of `gPresets` after boot. It loads
+  the preset's saved user edit if its `UserPreset` slot is valid, else the factory values:
+  `LoadPreset()` with the chosen `params` and `applyReverseWindow()` with the chosen
+  reverse window. It then copies the preset's `knobMap`, `maxDelayLines` and blink timings
+  (never user-edited) into `PedalState` and sets `state.outputLevelsDirty`. The audio callback
+  and `updateBlinkState()` read only those cached copies
 - `max_delay_lines` is applied in the audio callback (`updateEngineControls()`) from
-  `state.maxDelayLines` (`cloudseed.cpp:495-503`)
+  `state.maxDelayLines` (`cloudseed.cpp:617-625`)
 - LED2 blinks continuously to indicate active preset (N blinks = preset N)
-- A parse failure is unrecoverable: `fatalErrorLoop()` (`cloudseed.cpp:171-180`, called at
-  `:648`) blinks both LEDs at 5 Hz forever and never starts audio. The same loop reports an
+- A parse failure is unrecoverable: `fatalErrorLoop()` (`cloudseed.cpp:215-224`, called at
+  `:781`) blinks both LEDs at 5 Hz forever and never starts audio. The same loop reports an
   exhausted SDRAM pool and an unexpected audio block size. `make` validates presets.toml
   before embedding it, so a rejected file cannot be built into firmware in the first place
 
 **Boot-time memory**: the parser allocates exclusively from a 512 KB bump arena carved from the
-head of `custom_pool` (`cloudseed.cpp:212-225`), used between `hw.Init()` and
-`new CloudSeed::ReverbController(...)`. Peak measured usage is 109,120 B on x86-64 (smaller on
+head of `custom_pool` (`cloudseed.cpp:256-269`), used between `hw.Init()` and
+`new CloudSeed::ReverbController(...)`. Peak measured usage is 112,648 B on x86-64 (smaller on
 32-bit ARM); the arena is abandoned - not freed - so the SDRAM pool starts at offset 0 for the
 reverb. Permanent SDRAM cost of the TOML system: zero.
 
@@ -255,10 +283,10 @@ The current preset and the bypass state are both automatically saved to and load
 
 **Implementation** ([cloudseed.cpp](cloudseed.cpp)):
 
-**Settings Structure** (`cloudseed.cpp:95-109`):
+**Settings Structure** (`cloudseed.cpp:106-120`):
 ```cpp
-constexpr int SETTINGS_VERSION = 2;                 // cloudseed.cpp:52
-constexpr uint32_t SETTINGS_SAVE_DELAY_MS = 3000;  // cloudseed.cpp:56
+constexpr int SETTINGS_VERSION = 2;                 // cloudseed.cpp:49
+constexpr uint32_t SETTINGS_SAVE_DELAY_MS = 3000;  // cloudseed.cpp:53
 
 struct Settings {
     int  version;        // SETTINGS_VERSION for compatibility checking
@@ -275,12 +303,12 @@ struct Settings {
 - Settings validated on load (invalid presets default to 0)
 
 **Save/Load Workflow**:
-1. **On startup**: `loadSettings()` (`cloudseed.cpp:274-284`) restores preset and bypass from
-   flash; called from `main()` at `:681`
-2. **On preset change / bypass toggle**: nothing is written yet. `cyclePreset()` updates
-   `state.currentPreset` in the main loop; the audio callback flips `state.bypass` (`:457-460`)
-3. **In main loop**: `serviceSettingsSave()` (`cloudseed.cpp:290-303`, called on every pass at
-   `:722`) mirrors `state.currentPreset` / `state.bypass` into the RAM copy
+1. **On startup**: `loadSettings()` (`cloudseed.cpp:353-363`) restores preset and bypass from
+   flash; called from `main()` at `:816`
+2. **On preset change / bypass toggle**: nothing is written yet. `loadPresetGated()` updates
+   `state.currentPreset` in the main loop; the audio callback flips `state.bypass` (`:574-577`)
+3. **In main loop**: `serviceSettingsSave()` (`cloudseed.cpp:390-403`, called on every pass at
+   `:868`) mirrors `state.currentPreset` / `state.bypass` into the RAM copy
    (`SavedSettings.GetSettings()`) and restarts a `SETTINGS_SAVE_DELAY_MS` timer whenever they
    differ. Once 3 s pass without another change it calls `SavedSettings.Save()`, outside the
    audio callback. A burst of preset/bypass changes therefore costs one QSPI sector erase, and
@@ -288,16 +316,74 @@ struct Settings {
    change loses that change (the pedal boots in the last saved state)
 
 **Resilience Features**:
-- Invalid preset indices automatically default to preset 0 (Chorus) (`cloudseed.cpp:280-281`);
+- Invalid preset indices automatically default to preset 0 (Chorus) (`cloudseed.cpp:359-360`);
   the corrected index is written back to flash 3 s after boot
-- Version mismatch triggers `RestoreDefaults()` (`cloudseed.cpp:276-277`); the defaults are then
+- Version mismatch triggers `RestoreDefaults()` (`cloudseed.cpp:355-356`); the defaults are then
   read straight-line, with no reload
-- First boot / version mismatch defaults to preset 0 and `bypass = true` (`cloudseed.cpp:673-678`)
-- LED1 is re-synced to the restored bypass state after load (`cloudseed.cpp:685-686`)
+- First boot / version mismatch defaults to preset 0 and `bypass = true` (`cloudseed.cpp:804-809`)
+- LED1 is re-synced to the restored bypass state after load (`cloudseed.cpp:820-821`)
 - Non-blocking: flash writes happen in the main loop, not the audio callback
 - Settings survive power cycles, firmware updates, and manual resets
 
 **To add more persistent settings**: add the field to the `Settings` struct, extend its `operator!=`, increment `SETTINGS_VERSION`, and update `loadSettings()` (restore into `state`) and `serviceSettingsSave()` (mirror into the RAM copy and include it in the change test).
+
+### User preset save / factory restore
+
+A sound can be saved into the current preset on the pedal and later reverted to its
+presets.toml version. Saved edits survive power cycles but not a firmware change.
+
+**Storage** (`cloudseed.cpp:55-59`, `:122-141`, `:200-207`): `PersistentStorage<UserPresets>
+SavedUserPresets` at QSPI offset `USER_PRESETS_QSPI_OFFSET` (0x1000). That is the 4 KB sector
+after `Settings`, which sits at offset 0 in sector 0. The Daisy bootloader keeps programs at
+0x90040000 and never touches the first 256 KB
+(`libdaisy/doc/md/_a7_Getting-Started-Daisy-Bootloader.md:82`), and `QSPIHandle::Erase` works in
+4 KB sectors, so each store erases only its own sector.
+
+```cpp
+struct UserPreset  { float params[47]; float reverseDelay; uint32_t valid; };  // 196 B
+struct UserPresets { uint32_t firmwareHash; UserPreset presets[kMaxPresets]; }; // 3140 B
+```
+
+- Every field is 4 bytes wide, so there is no padding and `operator!=` is a `memcmp`. A
+  `static_assert` keeps `sizeof(UserPresets)` + the 4 B `PersistentStorage` state word within
+  one sector; it breaks if `kMaxPresets` goes above 20
+- A slot is used only when `valid == USER_PRESET_VALID` (1); erased flash reads 0xFFFFFFFF.
+  `valid` is the last field, and QSPI pages are programmed in ascending order, so a write cut
+  off by power loss can leave a slot invalid (factory) but never half-written
+- `params` is the full `GetAllParameters()` snapshot. `LineCount`/`isReverse` come along but
+  are ignored, because `LoadPreset()` skips both. The knob map, `max_delay_lines`, and blink
+  timing are not saved
+
+**Firmware identity** (`firmwareImageHash()`, `cloudseed.cpp:367-374`): FNV-1a over the words
+between the linker symbols `_stext` and `_etext`, which bound `.text` + `.rodata`
+(`libdaisy/core/STM32H750IB_sram.lds:36,47`) and include the embedded presets.toml.
+`initUserPresets()` (`cloudseed.cpp:376-384`, called from `main()` at `:813` before
+`loadSettings()`) calls `RestoreDefaults()` (one sector erase) when the stored hash differs.
+Any code or presets.toml change therefore discards every saved preset. A byte-identical reflash
+keeps them, because nothing distinguishes it from a reboot. `Settings` (preset index, bypass)
+are unaffected by the hash.
+
+**Save** (FS1 held 5 s): `processFootswitches()` sets `gSaveRequested`. On the next callback
+with the preset-change gate open, the callback copies `GetAllParameters()` and
+`state.reverseDelayNorm` into `gSaveSnapshot`, marks it valid, and publishes it with
+`state.saveSnapshotReady` (`cloudseed.cpp:716-725`). The main loop (`:842-849`) copies the
+snapshot into the current preset's slot, clears the flag, calls `SavedUserPresets.Save()` (a
+blocking erase + write in the main loop; audio keeps running from SRAM), and starts the
+confirmation blink.
+
+**Restore** (FS1 + FS2 held 5 s): the callback sets `state.triggerPresetRestore`. The main
+loop (`:850-856`) clears the slot to `UserPreset{}` (invalid), reloads the preset through
+`loadPresetGated()`, which parks the knobs and drops any unsaved tweaks, calls `Save()`, and
+starts the confirmation blink. `Save()` skips the erase when the slot was already empty.
+
+Both handlers run before the preset-change block in the main loop, so a snapshot is always
+stored into the preset that was loaded when it was taken.
+
+**Confirmation**: `startConfirmBlink()` / `updateConfirmBlink()` (`cloudseed.cpp:526-553`) drive
+LED1 and LED2 together for `CONFIRM_BLINKS` (3) on/off cycles of `CONFIRM_BLINK_MS` (80 ms),
+even when bypassed. While the blink runs, `updateBlinkState()` is skipped. When it ends, LED1 is
+re-set to the bypass state and LED2 goes back to the preset pattern. This is distinct from
+`fatalErrorLoop()`, which blinks both LEDs at 5 Hz forever.
 
 ### Parameters
 
@@ -322,7 +408,7 @@ struct Settings {
 CloudSeed requires massive delay buffers:
 
 ```cpp
-// cloudseed.cpp:186-206
+// cloudseed.cpp:230-250
 static constexpr size_t alignUp8(size_t n) {
     return (n + 7u) & ~static_cast<size_t>(7u);
 }
@@ -353,7 +439,7 @@ declare it `extern`. Callers placement-new into it (e.g.
 `delete` - see [PERFORMANCE.md](PERFORMANCE.md) §6.
 
 The first 512 KB of this pool doubles as the boot-time TOML parse arena
-(`toml_arena_alloc`, `cloudseed.cpp:219-225`). That arena is abandoned before
+(`toml_arena_alloc`, `cloudseed.cpp:263-269`). That arena is abandoned before
 `new CloudSeed::ReverbController(...)` runs, so `pool_index` is still 0 when the reverb starts
 allocating - the two uses never overlap in time.
 
@@ -433,9 +519,9 @@ missing/unknown/misplaced parameters, unknown preset- and root-level keys, out-o
 scalars (a parameter value that is non-finite or outside 0..1, a `max_delay_lines` that is not a
 whole number 1..5, `blinks`, the ms fields), and a document too large for the boot parse arena - the host tool allocates through a
 replica of `TOML_ARENA_SIZE` (512 KB, 8-byte aligned, no reuse), so `presets.toml: 10 presets
-valid, boot arena peak 109120 of 524288 bytes` is the same peak the pedal sees. Host pointers
+valid, boot arena peak 112648 of 524288 bytes` is the same peak the pedal sees. Host pointers
 are 64-bit, so the reported peak over-estimates the 32-bit target: a pass here implies a fit on
-hardware. A near-miss should be fixed by raising `TOML_ARENA_SIZE` (`cloudseed.cpp:216`), not
+hardware. A near-miss should be fixed by raising `TOML_ARENA_SIZE` (`cloudseed.cpp:260`), not
 by loosening the host check.
 
 Preset values are free to change: `make presets-check` fails only on input the parser rejects.
@@ -443,7 +529,7 @@ There is no golden-value comparison; the original factory values are recoverable
 history.
 
 A file that somehow reaches the pedal broken is unrecoverable at runtime: `fatalErrorLoop()`
-(`cloudseed.cpp:171-180`, called at `:648`) blinks both LEDs at 5 Hz forever and never starts
+(`cloudseed.cpp:215-224`, called at `:781`) blinks both LEDs at 5 Hz forever and never starts
 audio.
 
 ### Build Outputs
@@ -506,7 +592,7 @@ resolved map with `./build/preset_check --print-knob-map presets.toml`.
 knob6_b = "input.LowPass"
 ```
 
-`applyKnobTarget()` (`cloudseed.cpp:315-351`) turns `LowPassEnabled` on the first time that
+`applyKnobTarget()` (`cloudseed.cpp:406-436`) turns `LowPassEnabled` on the first time that
 knob is moved, so the filter is audible even in presets that ship with it off; the takeover
 glide starts from the open filter (`knobTargetValue()`), so enabling it does not step the tone.
 `HighPass` gets the same treatment via `HiPassEnabled`; no other gated parameter does - for the
@@ -521,20 +607,20 @@ dry-cancellation scale will stay at their old values.
 **Adding a non-parameter target** (like `reverse.delay`) requires C++: a new
 `KnobTargetKind` in [preset_bank.h](preset_bank.h), a branch in `parseKnobTarget()`
 ([preset_bank.cpp](preset_bank.cpp)), and a branch in `applyKnobTarget()`
-(`cloudseed.cpp:315-351`).
+(`cloudseed.cpp:406-436`).
 
 ### 2. Modifying Parameter Ranges
 
-Knobs are read raw: `hw.knob[kKnobIndex[i]].Value()` (`cloudseed.cpp:589-590`) yields 0.0-1.0
+Knobs are read raw: `hw.knob[kKnobIndex[i]].Value()` (`cloudseed.cpp:711-712`) yields 0.0-1.0
 and is handed straight to `SetParameter`, which applies the engine's own scaling
 (`ReverbController::GetScaledParameter`). There is no per-knob min/max any more - the six
 `::daisy::Parameter` wrappers were removed when knob targets became data.
 
-To restrict a knob's travel, scale in `applyKnobTarget()` (`cloudseed.cpp:315-351`) before the
+To restrict a knob's travel, scale in `applyKnobTarget()` (`cloudseed.cpp:406-436`) before the
 `SetParameter` call, e.g. `value = 0.5f + 0.5f * value;` for the upper half of the range. Note
 that this affects every preset that maps a knob to that parameter.
 
-The knob response constants: `KNOB_SMOOTHING_COEFF` (`cloudseed.cpp:48`, the ADC one-pole), and in
+The knob response constants: `KNOB_SMOOTHING_COEFF` (`cloudseed.cpp:45`, the ADC one-pole), and in
 [knob_bank.h](knob_bank.h) `kKnobMoveThreshold` (how far a parked knob must move to take over),
 `kKnobApplyEpsilon` (the smallest change a live knob re-writes), `kKnobRailWindow` (how close to a
 stop reads as exactly 0.0 / 1.0), and `kKnobGlideBlocks` (takeover glide length in 1 ms blocks;
@@ -582,15 +668,23 @@ HighPass       = 0.0
 LowPassEnabled = 0.0
 LowPass        = 0.29
 
-# ... the remaining seven groups, every key required
+# ... the remaining six groups, every key required
+
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
 ```
 
 Rules the parser enforces (a violation fails `make` before the blob is embedded; if one were
 ever flashed it would stop boot and blink both LEDs):
-- All eight `[preset.params.*]` groups must be present, each containing exactly its own keys -
-  45 parameters total. Group membership is defined by `kGroups` in
+- All eight `[preset.params.*]` parameter groups must be present, each containing exactly its
+  own keys - 45 parameters total. Group membership is defined by `kGroups` in
   [preset_bank.cpp](preset_bank.cpp) and mirrored by the reference comment at the top of
   presets.toml
+- `[preset.params.reverse]` must be present with exactly one key, `delay`, a number 0..1
+  (`missing [preset.params.reverse]`, `missing or non-numeric 'reverse.delay'`,
+  `'reverse.delay' = V out of range 0..1`, `[preset.params.reverse]: unknown key 'K'`). It is
+  the value `reverse.delay` starts at when the preset loads: 20 + Response3Oct(delay) × 1980 ms
 - `LineCount` and `isReverse` must not appear (SWITCH_1 and SWITCH_2 own them)
 - `[preset.knob_map]` must be present with all twelve `knobN_a` / `knobN_b` keys. Each value
   is a quoted `"group.Parameter"` whose parameter really belongs to that group, or
@@ -610,7 +704,9 @@ Then rebuild and reflash: `make && make program-dfu` - validation is part of `ma
 adapts automatically.
 
 **Reordering or deleting presets** invalidates saved settings: bump `SETTINGS_VERSION`
-(`cloudseed.cpp:52`) in the same change so stale flash contents are discarded.
+(`cloudseed.cpp:49`) in the same change so stale flash contents are discarded. Saved user
+presets need nothing: any presets.toml change alters the firmware hash, which discards them all
+at the next boot.
 
 **Blink Pattern Customization**: per preset, via `blinks`, `led_on_ms`, `led_off_ms`, and
 `led_pause_ms`.
@@ -631,15 +727,18 @@ static const int TotalLineCount = 4;
 
 ### 5. Modifying Switch Behavior
 
-**File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:58-64` for the named switch constants
+**File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:65-71` for the named switch constants
 `LINE_COUNT_SWITCH`, `BLOOM_SWITCH`, `REVERSE_ON_SWITCH`, `REVERSE_ROUTE_SWITCH`,
-`BYPASS_FOOTSWITCH`, `PRESET_FOOTSWITCH`; `cloudseed.cpp:495-510` for SWITCH_1/SWITCH_2 in
-`updateEngineControls()`; `cloudseed.cpp:595-603` for SWITCH_3/SWITCH_4 in the callback)
+`BYPASS_FOOTSWITCH`, `PRESET_FOOTSWITCH`; `cloudseed.cpp:617-632` for SWITCH_1/SWITCH_2 in
+`updateEngineControls()`; `cloudseed.cpp:728-736` for SWITCH_3/SWITCH_4 in the callback)
 
 Current logic: SWITCH_1 selects the delay-line count (off = 2, on = the preset's
 `max_delay_lines`); SWITCH_2 is Bloom; SWITCH_3 toggles the reverse voice; SWITCH_4 selects
 reverse routing (off = into the reverb, on = direct mix). The reverse window length is no
-longer a SWITCH_3 overload of KNOB_4 - it is whichever knob maps to `"reverse.delay"`.
+longer a SWITCH_3 overload of KNOB_4: it starts at the preset's `[preset.params.reverse] delay`
+and is then set by whichever knob maps to `"reverse.delay"`. Footswitch gestures (tap, hold,
+the 5 s save and the restore chord, including `kLongHoldBlocks`) live in
+[footswitch_gestures.h](footswitch_gestures.h).
 
 ```cpp
 // Example: Make switches select exact count instead of additive
@@ -649,15 +748,15 @@ else if (hw.switches[Terrarium::SWITCH_2].Pressed()) lineCount = 4;
 else if (hw.switches[Terrarium::SWITCH_1].Pressed()) lineCount = 3;
 ```
 
-The code uses `.Pressed()` — an 'ON' toggle counts as pressed (`cloudseed.cpp:497`) — not
-`.Read()`. Any replacement must still apply the per-preset max at `cloudseed.cpp:495-503`,
+The code uses `.Pressed()` — an 'ON' toggle counts as pressed (`cloudseed.cpp:619`) — not
+`.Read()`. Any replacement must still apply the per-preset max at `cloudseed.cpp:617-625`,
 or CPU-intensive presets will crackle.
 
 Switch 2 controls a "Bloom" effect which reverses the gain decay on multi-tap delays
 
 ### 6. Adjusting Audio Buffer Size
 
-**File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:689-702`)
+**File**: [cloudseed.cpp](cloudseed.cpp) (`cloudseed.cpp:824-837`)
 
 ```cpp
 // Current: 48 samples per block
@@ -670,8 +769,8 @@ Three sizes are coupled and must change together:
 - `DaisyPetal::Init()` sets the hardware block size to 48 (`libdaisy/src/daisy_petal.cpp:90`);
   override it with `hw.SetAudioBlockSize(n)` before `StartAudio()`
 - `AUDIO_BUFFER_SIZE` (`cloudseed.cpp:26`) sizes the file-scope `gInputBuffer`, `gWetBuffer`,
-  `gReverseBuffer` and `gReverbInputBuffer` (`cloudseed.cpp:447-450`) and every callback loop;
-  `main()` stops in `fatalErrorLoop()` if `hw.AudioBlockSize()` differs (`cloudseed.cpp:640-641`)
+  `gReverseBuffer` and `gReverbInputBuffer` (`cloudseed.cpp:561-564`) and every callback loop;
+  `main()` stops in `fatalErrorLoop()` if `hw.AudioBlockSize()` differs (`cloudseed.cpp:773-774`)
 - `ReverbController::bufferSize` (`CloudSeed/ReverbController.h:23`) sizes the controller's
   fixed member arrays
 
@@ -693,8 +792,8 @@ float cv_value = hw.knob[Terrarium::KNOB_1].Value();
 
 **Current Implementation**: LED2 uses a state machine to blink the preset number continuously (runs in main loop).
 
-The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:67-81`;
-`startBlinkSequence` :383-390; `updateBlinkState` :393-439). The pattern itself is
+The system is defined in [cloudseed.cpp](cloudseed.cpp) (structs at `:74-88`;
+`startBlinkSequence` :468-475; `updateBlinkState` :478-524). The pattern itself is
 `state.blinkPattern`, cached by `loadPreset()`; there is no per-call lookup function. Both
 functions only `Set()` LED2; the audio callback's `Led::Update()` pushes it to the pin.
 
@@ -712,6 +811,9 @@ functions only `Set()` LED2; the audio callback's `Led::Update()` pushes it to t
 - 150ms on, 150ms off per blink
 - 5 second pause between sequences
 - Automatically restarts sequence after pause
+- Save / restore confirmation: `updateConfirmBlink()` takes over LED1 and LED2 for 3 × 80 ms
+  on/off (even when bypassed) and `updateBlinkState()` is skipped until it finishes; LED2 then
+  restarts its preset pattern and LED1 returns to the bypass state
 
 **To modify LED2 behavior for custom purposes**, you would need to modify or replace the `updateBlinkState()` function in the main loop. The current implementation is tightly integrated with preset indication.
 
@@ -724,7 +826,7 @@ functions only `Set()` LED2; the audio callback's `Led::Update()` pushes it to t
   validated by `make`)
 - [cloudseed.cpp](cloudseed.cpp) - hardware wiring, audio callback, knob dispatch
 - [knob_bank.h](knob_bank.h) - absolute, parked knob take-over state machine (park, 50 ms glide, track)
-- [preset_footswitch.h](preset_footswitch.h) - FS2 tap (next preset) / hold (secondary bank) state machine
+- [footswitch_gestures.h](footswitch_gestures.h) - FS1/FS2 gesture state machine: taps, FS2 hold (secondary bank), FS1 5 s save, FS1 + FS2 5 s restore
 
 **Advanced**:
 - [preset_bank.cpp](preset_bank.cpp) - TOML schema, group membership, and validation errors
@@ -739,36 +841,41 @@ functions only `Set()` LED2; the audio callback's `Led::Update()` pushes it to t
 
 ### Understanding Audio Flow
 
-**CloudSeed Audio Callback** (`audioCallback()` at `cloudseed.cpp:572-606` - runs once per
+**CloudSeed Audio Callback** (`audioCallback()` at `cloudseed.cpp:694-739` - runs once per
 48-sample block, i.e. at 1 kHz):
-1. Process analog/digital controls and push both LEDs with `Led::Update()` (`:575-578`). Once
+1. Process analog/digital controls and push both LEDs with `Led::Update()` (`:697-700`). Once
    audio runs this is the only caller of `Update()`: it is a read-modify-write that would race
    with the main loop
-2. `processFootswitches()` (`:452-469`): FOOTSWITCH_1's `FallingEdge()` flips `state.bypass`
-   and sets LED1 (the main loop persists it later). FOOTSWITCH_2's `Pressed()` and
-   `FallingEdge()` go to one `gPresetFs.Update()` call, which returns true (set
-   `triggerPresetChange`) on the release of a press during which no secondary knob wrote
+2. `processFootswitches()` (`:566-591`): one `gFootswitches.Update()` call with both switches'
+   `Pressed()` / `FallingEdge()` returns `FootswitchEvents`. `toggleBypass` flips
+   `state.bypass` and sets LED1 (the main loop persists it later), `cyclePreset` sets
+   `triggerPresetChange`, `savePreset` sets `gSaveRequested`, `restorePreset` sets
+   `triggerPresetRestore`
 3. Read `state.bypass` once. While `state.presetChangeInProgress` is set the main loop is
    rewriting `state.knobMap` and every engine parameter, so the callback copies the input to
-   the output and returns (`:582-586`): no knob scan, no reverb, `reverseMix` does not advance
-4. Read all six knobs with `hw.knob[kKnobIndex[i]].Value()` (`:588-590`) and call
-   `updateEngineControls(gPresetFs.Held() ? 1 : 0, knobPositions)` (`:592`, body `:475-511`),
+   the output and returns (`:704-708`): no knob scan, no reverb, `reverseMix` does not advance
+4. Read all six knobs with `hw.knob[kKnobIndex[i]].Value()` (`:710-712`) and call
+   `updateEngineControls(gFootswitches.PresetHeld() ? 1 : 0, knobPositions)` (`:714`, body `:597-633`),
    which holds every reverb write:
    - read every knob's current target value for the active bank with `knobTargetValue()`, then
-     one `gKnobs.Scan(bank, state.knobResetPending, …)` call (`:479-486`) re-parks on any bank
+     one `gKnobs.Scan(bank, state.knobResetPending, …)` call (`:601-608`) re-parks on any bank
      or preset transition (zero writes that block) and otherwise returns the knobs to write:
      glide steps for a knob taking over, then the knob's own position
    - dispatch each returned write through `applyKnobTarget()` using `state.knobMap[bank][i]` —
-     the cached copy, never `gPresets` (`:487-488`); any write while in bank 1 calls
-     `gPresetFs.MarkEdited()`, cancelling that hold's preset change (`:492-493`)
+     the cached copy, never `gPresets` (`:609-610`); any write while in bank 1 calls
+     `gFootswitches.MarkEdited()`, cancelling that hold's preset change (`:614-615`)
    - select the delay line count from SWITCH_1 (`LINE_COUNT_SWITCH`; off = 2, on =
      `state.maxDelayLines`, cached by `loadPreset()`) and write `Parameter::LineCount` when it
-     differs from `state.prevNumDelayLines` (`:495-503`). Both candidates are exact copies, so
+     differs from `state.prevNumDelayLines` (`:617-625`). Both candidates are exact copies, so
      the `!=` test is exact; a preset with a different `max_delay_lines` is re-applied on the
      first callback after the change
    - apply Bloom (SWITCH_2, `BLOOM_SWITCH`) → `Parameter::isReverse` when it differs from
-     `state.prevBloom` (`:505-510`)
-5. `refreshOutputLevels()` (`:593`, body `:515-530`): `makeupGain` and `scaledDryOut` are
+     `state.prevBloom` (`:627-632`)
+   Then, if `gSaveRequested` is set and the previous snapshot has been consumed, copy
+   `GetAllParameters()` and `state.reverseDelayNorm` into `gSaveSnapshot` and publish it with
+   `state.saveSnapshotReady` (`:716-725`). This runs only past the preset-change gate, so a
+   half-loaded preset is never captured
+5. `refreshOutputLevels()` (`:726`, body `:637-652`): `makeupGain` and `scaledDryOut` are
    **not** recomputed per block: they depend only on `DryOut`/`EarlyOut`/`MainOut`, so they are
    derived into `state.makeupGain` / `state.scaledDryOut` only when `state.outputLevelsDirty` is
    set, and the output stage just reads them. The flag is set by `applyKnobTarget()` on a write
@@ -780,42 +887,48 @@ functions only `Set()` LED2; the audio callback's `Led::Update()` pushes it to t
    are read from `reverb->GetAllParameters()`, not from knob positions - with
    `[preset.knob_map]` a knob need not be mapped to any of them
 6. Sample SWITCH_3 (`REVERSE_ON_SWITCH`) into `reverseTarget` (0 or 1) and copy the left input
-   channel into `gInputBuffer` (`:597-598`)
-7. SWITCH_4 (`REVERSE_ROUTE_SWITCH`) picks the render helper (`:600-603`), each of which writes
+   channel into `gInputBuffer` (`:730-731`)
+7. SWITCH_4 (`REVERSE_ROUTE_SWITCH`) picks the render helper (`:733-736`), each of which writes
    the output scaled by `makeupGain`:
-   - Into-reverb, SWITCH_4 off, `renderReverseIntoReverb()` (`:537-554`): reverse the dry input
+   - Into-reverb, SWITCH_4 off, `renderReverseIntoReverb()` (`:659-676`): reverse the dry input
      into `gReverseBuffer`, scale it to the injected reverse, add that to the reverb input
      (`gReverbInputBuffer`), run `reverb->Process(gReverbInputBuffer, gWetBuffer, …)`, then
      `out = (wet − scaledDryOut * injectedReverse) * makeupGain`; subtracting
      `scaledDryOut * injectedReverse` cancels the reverb's dry pass-through of the injected
      reverse, so the forward dry stays clean and the reverse is heard only through the wet tail
-   - Direct-mix, SWITCH_4 on, `renderReverseDirect()` (`:558-569`):
+   - Direct-mix, SWITCH_4 on, `renderReverseDirect()` (`:680-691`):
      `reverb->Process(gInputBuffer, gWetBuffer, …)`, record the reverb output into
      `reverseDelay` for backward playback, then
      `out = (wet + reversed * REVERSE_LEVEL * mix) * makeupGain`, the reverse audible on its own
    Both ramp the reverse via a smoothed mix toward `reverseTarget`, kept in a local during the
    sample loop and stored back to `state.reverseMix` afterwards, so SWITCH_3 toggles click-free
    (engine in `CloudSeed/ReverseDelay.h`)
-8. If bypassed, overwrite the output with the input (`:604-605`)
+8. If bypassed, overwrite the output with the input (`:737-738`)
 
 When `state.bypass` is set, output is a straight copy of the input — but the reverb (and the
-reverse mix) is still processed, deliberately, to suppress an audible 1 kHz whine (`:599`). When
+reverse mix) is still processed, deliberately, to suppress an audible 1 kHz whine (`:732`). When
 `state.presetChangeInProgress` is set, the reverb is skipped entirely and the input is passed
-through (`:583-586`).
+through (`:705-708`).
 
-**CloudSeed Main Loop** (`main()` while loop at `cloudseed.cpp:704-728` - free-running, no sleep):
-1. **Handle preset changes** (`:709-720`): clear `triggerPresetChange`, set
-   `presetChangeInProgress` and `state.knobResetPending` (so the knob positions are
-   re-snapshotted before the new preset loads), then between two
-   `std::atomic_signal_fence(std::memory_order_seq_cst)` compiler barriers run `cyclePreset()`
-   and `startBlinkSequence(state.blinkPattern)`, then clear the flag to re-enable audio
-   processing. `loadPreset()` is synchronous, so there is no delay: the gate reopens as soon as
-   it returns. The four flags shared with the callback (`bypass`, `triggerPresetChange`,
-   `presetChangeInProgress`, `knobResetPending`) are `volatile bool` (`:118-121`)
-2. **Persist settings**: `serviceSettingsSave()` (`:722`) - the coalesced flash write described
+**CloudSeed Main Loop** (`main()` while loop at `cloudseed.cpp:839-875` - free-running, no sleep):
+1. **Save / restore** (`:842-856`): a published `gSaveSnapshot` is copied into the current
+   preset's `UserPreset` slot and written with `SavedUserPresets.Save()`; a restore clears the
+   slot, reloads the preset with `loadPresetGated()`, and saves. Both start the confirmation
+   blink. See "User preset save / factory restore"
+2. **Handle preset changes** (`:862-866`): clear `triggerPresetChange`, then
+   `loadPresetGated(next)` (`:337-347`) sets `presetChangeInProgress` and
+   `state.knobResetPending` (so the knob positions are re-snapshotted before the new preset
+   loads), and between two `std::atomic_signal_fence(std::memory_order_seq_cst)` compiler
+   barriers updates `state.currentPreset` and runs `loadPreset()`, then clears the flag to
+   re-enable audio processing; `startBlinkSequence(state.blinkPattern)` follows.
+   `loadPreset()` is synchronous, so there is no delay: the gate reopens as soon as it returns.
+   The six flags shared with the callback (`bypass`, `triggerPresetChange`,
+   `triggerPresetRestore`, `saveSnapshotReady`, `presetChangeInProgress`, `knobResetPending`)
+   are `volatile bool` (`:150-155`)
+3. **Persist settings**: `serviceSettingsSave()` (`:868`) - the coalesced flash write described
    under Preset Persistence
-3. **Update LED2 blink state**: `updateBlinkState()` (`:725`)
-4. `keepCoreBusy()` (`:727`, defined at `:616-625`) — deliberate busy work that keeps the core
+4. **Update LEDs**: `updateConfirmBlink()`, else `updateBlinkState()` (`:871-872`)
+5. `keepCoreBusy()` (`:874`, defined at `:749-758`) — deliberate busy work that keeps the core
    out of idle between callbacks and reduces an audible 1 kHz whine: it advances a `volatile`
    phase by 0.001 (wrapped at `TWO_PI`) and stores `sinf(phase)` to a `volatile` sink, so every
    pass performs a real FPU `sinf()` plus real loads and stores (a constant argument would be
@@ -828,10 +941,10 @@ through (`:583-586`).
   - No flash writes or preset loading
 - **Main loop**: Non-critical background tasks
   - Preset switching (includes buffer clearing)
-  - Flash memory writes
-  - LED blink state machine
+  - Flash memory writes (settings, user preset save/restore)
+  - LED blink state machine and save/restore confirmation blink
 - **FPU flush-to-zero** is enabled once at the top of `main()` before `hw.Init()`
-  (`cloudseed.cpp:628`) — see [PERFORMANCE.md](PERFORMANCE.md) §1
+  (`cloudseed.cpp:761`) — see [PERFORMANCE.md](PERFORMANCE.md) §1
 
 This separation prevents audio glitches during preset changes and flash writes.
 
@@ -854,20 +967,21 @@ hw.seed.PrintLine("Debug: value = %f", some_value);
 ### LED Indicators
 
 ```cpp
-// Terrarium LEDs are daisy::Led members of PedalState (cloudseed.cpp:147-148, init :633-637).
+// Terrarium LEDs are daisy::Led members of PedalState (cloudseed.cpp:182-183, init :766-770).
 // DaisyPetal has no led1/led2 members - it exposes SetRingLed/SetFootswitchLed/ClearLeds
 // for the Daisy Petal board's own I2C LED driver, which Terrarium does not use.
 state.led2.Set(parameter_value);  // 0.0-1.0
 ```
 
 `Set()` is enough once audio runs: the audio callback calls `Led::Update()` for both LEDs every
-block (`cloudseed.cpp:577-578`), and nothing else may call it after `hw.StartAudio()` (it is a
+block (`cloudseed.cpp:699-700`), and nothing else may call it after `hw.StartAudio()` (it is a
 read-modify-write that races with the callback). Only before `StartAudio()` must you call
 `state.led2.Update()` yourself.
 
-Caveat: `updateBlinkState()` (`cloudseed.cpp:393-439`) drives LED2 on every main-loop pass and
+Caveat: `updateBlinkState()` (`cloudseed.cpp:478-524`) drives LED2 on every main-loop pass and
 will overwrite debug values unless that call is removed. LED1 is likewise re-set on every
-bypass toggle (`cloudseed.cpp:459`).
+bypass toggle (`cloudseed.cpp:576`), and both LEDs are driven by the save/restore confirmation
+blink (`updateConfirmBlink()`, `cloudseed.cpp:538-553`).
 
 ### Common Issues
 
@@ -883,7 +997,7 @@ bypass toggle (`cloudseed.cpp:459`).
 
 **Control Issues**:
 - Verify ADC channel mapping in Terrarium
-- Check the knob smoothing coefficient (`KNOB_SMOOTHING_COEFF`, `cloudseed.cpp:48`) and the
+- Check the knob smoothing coefficient (`KNOB_SMOOTHING_COEFF`, `cloudseed.cpp:45`) and the
   takeover constants in [knob_bank.h](knob_bank.h): a knob brushed by accident taking over its
   target means `kKnobMoveThreshold` is too low (raise it to 0.02); a parameter that is re-written
   while nobody touches a live knob means `kKnobApplyEpsilon` is below the ADC noise; a stop that
@@ -919,11 +1033,16 @@ bypass toggle (`cloudseed.cpp:459`).
 - The runtime heap is not in this report: it grows from `end` in RAM_D2
   (`libdaisy/core/STM32H750IB_sram.lds:244-251`), which is where `DelayLine`'s `tempBuffer`,
   `mixedBuffer`, and `filterOutputBuffer` (`CloudSeed/DelayLine.h:44-46`) land
-- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 187,236 B of 480KB (38.09%). Of that, the
-  embedded `presets.toml` blob is 35,304 B (`build/presets_toml.o` - it now carries the
-  per-preset `[preset.knob_map]` tables), tomlc99 is 14,371 B, and `preset_bank.o` is 5,836 B
-- DTCMRAM: 20,476 B of 128KB (15.62%) — includes the 4,228 B `gPresets` bank (384 B of that is
-  the knob maps, 24 B per preset slot); RAM_D2_DMA: 16,968 B of 32KB (51.78%)
+- SRAM (`.text`+`.data`, `BOOT_SRAM` region): 190,532 B of 480KB (38.76%). Of that, the
+  embedded `presets.toml` blob is 36,832 B (`build/presets_toml.o` - it carries the
+  per-preset `[preset.knob_map]` and `[preset.params.reverse]` tables), tomlc99 is 14,371 B,
+  and `preset_bank.o` is 6,280 B
+- DTCMRAM: 27,052 B of 128KB (20.64%) — includes the 4,292 B `gPresets` bank (384 B of that is
+  the knob maps, 24 B per preset slot), the 6,296 B `SavedUserPresets` (`PersistentStorage`
+  keeps a defaults copy and a live copy of the 3,140 B `UserPresets`), and the 196 B
+  `gSaveSnapshot`; RAM_D2_DMA: 16,968 B of 32KB (51.78%)
+- QSPI: `Settings` in sector 0 (offset 0) and `UserPresets` in sector 1 (offset 0x1000), both
+  inside the 256 KB below the bootloader's program area at 0x90040000
 
 ### Optimization Tips
 
@@ -967,7 +1086,7 @@ Key changes in this fork:
 3. Added preset cycling via footswitch
 4. Simplified control scheme for guitar pedal use
 5. Added delay line switching via toggle switches
-6. **Bypass state persisted to flash** alongside the preset (`SETTINGS_VERSION = 2`, `cloudseed.cpp:95-109`)
+6. **Bypass state persisted to flash** alongside the preset (`SETTINGS_VERSION = 2`, `cloudseed.cpp:106-120`)
 7. **Persistent preset storage** in QSPI flash memory with version control
 8. **LED2 blink pattern system** for visual preset indication
 9. **TOML-defined presets**: all preset data lives in [presets.toml](presets.toml), embedded in
@@ -979,34 +1098,41 @@ Key changes in this fork:
 11. **Modulo-based preset cycling** for cleaner wraparound logic
 12. **Through the Looking Glass Preset** enabled by adopting a `max_delay_lines` value for each preset
 13. **Equal-power makeup gain** on the wet path, so perceived loudness holds as the dry/wet
-    balance changes (`refreshOutputLevels()`, `cloudseed.cpp:515-530`, applied by the render
-    helpers at `:537-569`), derived from `reverb->GetAllParameters()` only
+    balance changes (`refreshOutputLevels()`, `cloudseed.cpp:637-652`, applied by the render
+    helpers at `:659-691`), derived from `reverb->GetAllParameters()` only
     when `DryOut`/`EarlyOut`/`MainOut` change (`state.outputLevelsDirty`), not per block
 14. **1 kHz whine mitigation**: the reverb is still processed while bypassed
-    (`cloudseed.cpp:599-605`) and every main-loop pass calls `keepCoreBusy()`
-    (`cloudseed.cpp:616-625`, `:727`): a real FPU `sinf()` of a `volatile` phase plus `volatile`
+    (`cloudseed.cpp:732-738`) and every main-loop pass calls `keepCoreBusy()`
+    (`cloudseed.cpp:749-758`, `:874`): a real FPU `sinf()` of a `volatile` phase plus `volatile`
     loads and stores, so the core never idles between callbacks
-15. **FPU flush-to-zero enabled at boot** to eliminate denormal stalls (`cloudseed.cpp:628`)
+15. **FPU flush-to-zero enabled at boot** to eliminate denormal stalls (`cloudseed.cpp:761`)
 16. **`BOOT_SRAM` app type** (`Makefile:6`): the app is loaded into SRAM from QSPI flash by
     the Daisy bootloader, leaving room for all ten presets
 17. **Per-preset knob mapping** (`[preset.knob_map]` in presets.toml): every knob has a primary
     and a secondary target, the secondary bank selected by holding the preset footswitch. Targets
     are `"group.Parameter"` strings plus the pseudo-target `"reverse.delay"` (the reverse window
-    length, formerly a SWITCH_3 overload of KNOB_4). Knobs are **absolute but parked**
+    length, formerly a SWITCH_3 overload of KNOB_4; its per-preset start value is
+    `[preset.params.reverse] delay`). Knobs are **absolute but parked**
     ([knob_bank.h](knob_bank.h)): after power-up, a preset load, or a bank change a knob writes
     nothing until it is turned, then glides its target to the pot's position over 50 ms and
     tracks it 1:1; the stops land exactly on 0.0 / 1.0
-18. **Preset footswitch tap/hold** (`processFootswitches()`, `cloudseed.cpp:452-469`): tapping
+18. **Footswitch gestures** (`processFootswitches()`, `cloudseed.cpp:566-591`): tapping
     FOOTSWITCH_2 cycles the preset on release; holding it selects the secondary knob bank, and its release cycles only
-    if no secondary knob wrote during the hold. Tracked by `PresetFootswitch`
-    ([preset_footswitch.h](preset_footswitch.h)), which holds the bank from `Pressed()` until
-    `FallingEdge()` so a bounce cannot drop it. FOOTSWITCH_1 toggles bypass on release,
-    independently of FOOTSWITCH_2
+    if no secondary knob wrote during the hold. FOOTSWITCH_1 toggles bypass on release. Both are
+    tracked by `FootswitchGestures` ([footswitch_gestures.h](footswitch_gestures.h)), which holds
+    each switch from `Pressed()` until `FallingEdge()` so a bounce cannot drop it, and treats any
+    overlap of the two as a chord whose releases do nothing
 19. **Active preset configuration cached in `PedalState`** (`loadPreset()`,
-    `cloudseed.cpp:245-263`): `knobMap`, `maxDelayLines` and the blink timings are copied out
+    `cloudseed.cpp:312-334`): `knobMap`, `maxDelayLines` and the blink timings are copied out
     of `gPresets` on load, so the audio callback and the blink state machine never touch the
     parsed bank. While `state.presetChangeInProgress` is set the callback passes audio through
     and makes no engine write, so a load cannot be read half-applied
+20. **Per-preset user save / factory restore**: FOOTSWITCH_1 held 5 s stores the engine state
+    and reverse window into the current preset's slot of a QSPI `UserPresets` store (offset
+    0x1000); FOOTSWITCH_1 + FOOTSWITCH_2 held 5 s clears the slot and reloads the presets.toml
+    values. Both are confirmed by LED1 + LED2 blinking 3 × 80 ms. The store is stamped with a
+    hash of the firmware image and discarded when it differs, so saved edits never outlive the
+    firmware that wrote them (see "User preset save / factory restore")
 
 ### Version Information
 
@@ -1031,8 +1157,8 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 ```
 
 ### File Locations
-- Control mapping: `[preset.knob_map]` in `presets.toml`; dispatch at `cloudseed.cpp:487-488`
-  and `applyKnobTarget()` `cloudseed.cpp:315-351`
+- Control mapping: `[preset.knob_map]` in `presets.toml`; dispatch at `cloudseed.cpp:609-610`
+  and `applyKnobTarget()` `cloudseed.cpp:406-436`
 - Preset data: `presets.toml` (embedded via `presets_toml.s`, parsed by `preset_bank.cpp`)
 - Preset application: `CloudSeed/ReverbController.h:47` (`LoadPreset`)
 - Parameters: `CloudSeed/Parameter.h`; names table: `CloudSeed/ParameterNames.h`
@@ -1041,15 +1167,19 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 ### Key Concepts
 - Buffer size: 48 samples
 - Sample rate: 48kHz (typical)
-- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena; peak 109,120 B)
+- SDRAM pool: 48MB (first 512 KB reused as the boot-only TOML parse arena; peak 112,648 B)
 - Delay lines: 5 (mono Terrarium), capped per preset by `max_delay_lines` in presets.toml
 - Presets: 10, defined in presets.toml, `gPresets.count` at runtime (max `kMaxPresets` = 16)
 - Persistent storage: preset index + bypass, QSPI flash, written 3 s after the last change,
   `SETTINGS_VERSION = 2` - preset order in presets.toml is frozen unless the version is bumped
+- User presets: FS1 held 5 s saves the current sound into the current preset, FS1 + FS2 held
+  5 s restores it to factory; stored in QSPI at offset 0x1000 and wiped when a different
+  firmware image boots. presets.toml is never modified
 - App type: `BOOT_SRAM` (app runs from SRAM, loaded by the Daisy bootloader)
 - LED2: Continuous blink pattern indicates preset number; both LEDs blinking together at 5 Hz
   with no audio is `fatalErrorLoop()`: the embedded TOML failed to parse, the SDRAM pool is
-  exhausted, or the audio block size is not `AUDIO_BUFFER_SIZE` (48)
+  exhausted, or the audio block size is not `AUDIO_BUFFER_SIZE` (48). Both LEDs blinking 3
+  times quickly is the save/restore confirmation
 - Knob banks: 2 per preset (`knobN_a` primary, `knobN_b` while the preset footswitch is held);
   knobs are absolute but parked - nothing moves until a knob is turned after a preset or bank
   change, then the target glides to the knob's position over 50 ms (no step) and tracks it; the
@@ -1058,14 +1188,17 @@ make program-dfu   # Flash the app (reset, hold BOOT until rapid blink, then run
 ### Quick Modifications
 1. Control mapping → `[preset.knob_map]` in `presets.toml` (verify with
    `./build/preset_check --print-knob-map presets.toml`)
-2. Knob feel → `KNOB_SMOOTHING_COEFF` (`cloudseed.cpp:48`), `kKnobMoveThreshold`,
+2. Knob feel → `KNOB_SMOOTHING_COEFF` (`cloudseed.cpp:45`), `kKnobMoveThreshold`,
    `kKnobApplyEpsilon`, `kKnobRailWindow`, `kKnobGlideBlocks` ([knob_bank.h](knob_bank.h))
 3. Add/modify presets → `presets.toml` (`make` validates it; `make presets-check` validates only)
 4. Blink patterns → `blinks` / `led_on_ms` / `led_off_ms` / `led_pause_ms` in `presets.toml`
-5. Switch logic → `cloudseed.cpp:58-64` (named switch constants), `cloudseed.cpp:595-603`
-   (SWITCH_3 / SWITCH_4), `cloudseed.cpp:495-510` (delay line count, `max_delay_lines` clamp,
-   Bloom), `cloudseed.cpp:452-469` (footswitches),
-   [preset_footswitch.h](preset_footswitch.h) (FS2 tap/hold)
-6. LED2 blink behavior → `cloudseed.cpp:393-439` (`updateBlinkState`)
+5. Switch logic → `cloudseed.cpp:65-71` (named switch constants), `cloudseed.cpp:728-736`
+   (SWITCH_3 / SWITCH_4), `cloudseed.cpp:617-632` (delay line count, `max_delay_lines` clamp,
+   Bloom), `cloudseed.cpp:566-591` (footswitches),
+   [footswitch_gestures.h](footswitch_gestures.h) (taps, FS2 hold, 5 s save / restore gestures)
+6. LED2 blink behavior → `cloudseed.cpp:478-524` (`updateBlinkState`); save/restore
+   confirmation → `cloudseed.cpp:526-553` (`CONFIRM_BLINKS`, `CONFIRM_BLINK_MS` at `:62-63`)
 7. Knob map schema/validation → `parseKnobMap()` / `parseKnobTarget()` in
    [preset_bank.cpp](preset_bank.cpp)
+8. User preset store → `UserPresets` (`cloudseed.cpp:122-141`), `initUserPresets()`
+   (`:376-384`), save/restore handling in the main loop (`:842-856`)

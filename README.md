@@ -16,6 +16,9 @@ This fork extends those capabilities and adds a few extras:
 - *Dark Plate*: Preset #10 mostly adapted from from Ghost Note Audio's CloudSeedCore
 - Delay line count is toggled by SW1 (off = 2 lines, on = the preset's maximum, up to 5)
 - Bypass state is saved between power cycles
+- Per-preset user save: hold FS 1 for 5 s to store the current sound into the current preset;
+  hold FS 1 + FS 2 together for 5 s to restore that preset to its factory values. Saved
+  presets survive power cycles and are discarded when different firmware is flashed
 - Agent-guided performance optimizations
 - Reduced 1khz whine while active or bypassed 
 - Presets are defined in [presets.toml](presets.toml), not in C++. The file is compiled into
@@ -52,8 +55,9 @@ make program-dfu
 ## Editing presets
 
 All ten presets live in [presets.toml](presets.toml) at the repo root - names, LED blink
-timing, the per-preset delay-line cap, and all 45 reverb parameters. The file is embedded into
-the firmware image, so changing a preset is:
+timing, the per-preset delay-line cap, all 45 reverb parameters, and the reverse-delay window
+(`[preset.params.reverse] delay`). The file is embedded into the firmware image, so changing a
+preset is:
 ```
 # edit presets.toml, then:
 make                 # validates presets.toml, then builds
@@ -71,6 +75,24 @@ parser rejects; preset values themselves are free to change.
 Preset order is stored in flash: append new `[[preset]]` entries at the end, and bump
 `SETTINGS_VERSION` in `cloudseed.cpp` if you reorder or delete any.
 
+## Saving and restoring presets on the pedal
+
+presets.toml is the **factory** version of every preset and is never modified on the pedal.
+
+- **Save**: hold FS 1 for 5 s. The current sound - all reverb parameters, including every knob
+  change, plus the reverse-delay window - replaces the current preset. Only that preset is
+  affected. Both LEDs blink 3 times quickly to confirm, and releasing FS 1 does not toggle
+  bypass.
+- **Restore factory**: hold FS 1 and FS 2 together for 5 s. They need not go down or come up at
+  exactly the same moment. The current preset reverts to its presets.toml values right away,
+  and its saved version is erased. Both LEDs blink 3 times; no bypass toggle or preset change
+  happens on release.
+
+Saved presets are stored in QSPI flash alongside the bypass/preset settings and survive power
+cycles. Flashing any different firmware (including a presets.toml edit) discards every saved
+preset, so the pedal boots with the factory versions. Re-flashing a byte-identical `.bin` keeps
+them. The knob map, delay-line cap, and blink timing always come from presets.toml.
+
 ## Knob mapping
 
 Every preset carries a `[preset.knob_map]` table naming what each knob does:
@@ -80,7 +102,7 @@ Every preset carries a `[preset.knob_map]` table naming what each knob does:
 knob1_a = "output.DryOut"        # primary: knob 1 normally
 ...
 knob1_b = "input.PreDelay"       # secondary: knob 1 while FS 2 is held
-knob6_b = "reverse.delay"        # the reverse-delay window length
+knob6_b = "reverse.delay"        # the reverse-delay window length ([preset.params.reverse] delay)
 ```
 
 Each value is a quoted `"group.Parameter"` naming a parameter from that preset's own
@@ -121,10 +143,12 @@ enabled in `[preset.params.*]` to be audible.
 | SW 2 | Bloom | Reverses the order of multi-tap delay gains, resulting in subsequent taps getting louder rather than quietier. |
 | SW 3 | Reverse Delay | Off = dry + reverb only; On = enables the reverse voice, routed per SW4 (into the reverb tail, or mixed straight into the output). Its window length is the knob mapped to `reverse.delay` (Ctrl 6 secondary by default). |
 | SW 4 | Reverse Routing | Chooses where the SW3 reverse goes. Off = into the reverb (the reversed guitar feeds the wet tail; the forward dry pass-through stays clean via dry-gain cancellation). On = direct mix (a reversed copy of the reverb output is mixed straight into the output). Only audible when SW3 is on. |
-| FS 1 | Bypass/Active | Bypass / effect engaged. Acts on **release**; works the same while FS 2 is held. |
+| FS 1 | Bypass/Active | Bypass / effect engaged. Acts on **release**. A release after a 5 s hold, or while FS 2 is (or was, during the same press) held, does not toggle bypass. |
+| FS 1 (held 5 s) | Save preset | Stores the current sound into the current preset (survives power cycles; see "Saving and restoring presets"). Both LEDs blink 3× to confirm. |
+| FS 1 + FS 2 (held 5 s) | Restore factory preset | Reverts the current preset to its presets.toml values and erases its saved version. Both LEDs blink 3× to confirm. |
 | FS 2 | Cycle Preset | Tap: loads the next available Preset, starts at beginning after the last in the list. Acts on **release**. These are the same as the original Cloud Seed plugin presets, except for "Through the Looking Glass" |
-| FS 2 (held) | Secondary knob bank | While held, every knob controls its `knobN_b` target instead of `knobN_a`. The release skips the preset change if a secondary knob was turned during the hold. |
-| LED 1 | Bypass/Active Indicator |Illuminated when effect is set to Active |
-| LED 2 | Preset indicator | Number of flashes = current preset number |
+| FS 2 (held) | Secondary knob bank | While held, every knob controls its `knobN_b` target instead of `knobN_a`. The release skips the preset change if a secondary knob was turned during the hold, or if FS 1 was also pressed. |
+| LED 1 | Bypass/Active Indicator |Illuminated when effect is set to Active. Blinks 3× with LED 2 to confirm a save or restore. |
+| LED 2 | Preset indicator | Number of flashes = current preset number. Blinks 3× with LED 1 to confirm a save or restore. |
 | Audio In 1 | Audio input | Mono only for Terrarium |
 | Audio Out 1 | Mix Out | Mono only for Terrarium |

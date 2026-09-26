@@ -17,7 +17,7 @@
 #include "CloudSeed/ReverseDelay.h"
 #include "preset_bank.h"
 #include "knob_bank.h"
-#include "preset_footswitch.h"
+#include "footswitch_gestures.h"
 
 using namespace daisy;
 using namespace terrarium;  // This is important for mapping the correct controls to the Daisy Seed on Terrarium PCB
@@ -34,11 +34,8 @@ constexpr float TWO_PI  = 6.28318530717958647692f;
 constexpr int   REVERSE_BUFFER_SIZE = 192000;  // 4s @ 48kHz record buffer (SDRAM);
                                                // >= 2x the 2000ms max window so the
                                                // ReverseDelay size/2 clamp never engages
-constexpr float REVERSE_GRAIN_NORM  = 0.4771f; // boot default window (~500 ms through
-                                               // Response3Oct); the knob mapped to
-                                               // "reverse.delay" retunes it
-constexpr float REVERSE_TIME_MIN_MS = 20.0f;   // "reverse.delay" knob fully CCW
-constexpr float REVERSE_TIME_MAX_MS = 2000.0f; // "reverse.delay" knob fully CW
+constexpr float REVERSE_TIME_MIN_MS = 20.0f;   // "reverse.delay" = 0.0
+constexpr float REVERSE_TIME_MAX_MS = 2000.0f; // "reverse.delay" = 1.0
 constexpr float REVERSE_LEVEL       = 0.7f;    // output scale of the reversed signal
 constexpr float REVERSE_MIX_SMOOTHING = 0.002f;// per-sample one-pole toward target 0/1
 
@@ -54,6 +51,16 @@ constexpr int SETTINGS_VERSION = 2;
 // Settings are written to flash this long after the last preset/bypass change, so a
 // burst of footswitch presses costs one QSPI sector erase instead of one per press.
 constexpr uint32_t SETTINGS_SAVE_DELAY_MS = 3000;
+
+// User preset edits live in the 4 KB QSPI sector after Settings (offset 0, sector 0).
+// Both sit in the first 256 KB the Daisy bootloader never touches.
+constexpr uint32_t USER_PRESETS_QSPI_OFFSET = 0x1000;
+constexpr uint32_t QSPI_SECTOR_BYTES        = 4096;
+constexpr uint32_t USER_PRESET_VALID        = 1u;  // erased flash reads 0xFFFFFFFF
+
+// Save / restore confirmation: both LEDs blink together this many times.
+constexpr int      CONFIRM_BLINKS   = 3;
+constexpr uint32_t CONFIRM_BLINK_MS = 80;  // on and off time
 
 // Terrarium controls. The values are indices into hw.switches[] (terrarium.h).
 constexpr int LINE_COUNT_SWITCH    = Terrarium::SWITCH_1;  // off = 2 lines, on = preset max
@@ -85,11 +92,15 @@ struct BlinkState {
 extern "C" {
     extern const char     presets_toml[];
     extern const uint32_t presets_toml_len;  // includes the terminating NUL
+    // Linker symbols bounding .text + .rodata (libdaisy/core/STM32H750IB_sram.lds:36,47),
+    // which include the embedded presets.toml. Used as the firmware identity.
+    extern const uint32_t _stext[];
+    extern const uint32_t _etext[];
 }
 
 static PresetBank gPresets;
 static KnobBank gKnobs;
-static PresetFootswitch gPresetFs;
+static FootswitchGestures gFootswitches;
 
 // Persistent Settings
 struct Settings {
@@ -108,6 +119,27 @@ struct Settings {
     }
 };
 
+// One preset's saved edit. Every field is 4 bytes, so there is no padding and the
+// memcmp below is exact. `valid` is last: QSPI pages are programmed in ascending
+// order, so a slot whose `valid` reads USER_PRESET_VALID was written completely.
+struct UserPreset {
+    float    params[(int)::Parameter::Count];  // reverb->GetAllParameters() at save time
+    float    reverseDelay;                     // state.reverseDelayNorm at save time
+    uint32_t valid;                            // USER_PRESET_VALID, else load from presets.toml
+};
+
+struct UserPresets {
+    uint32_t   firmwareHash;                   // firmwareImageHash() of the image that saved these
+    UserPreset presets[kMaxPresets];
+
+    // Required by PersistentStorage: decides whether Save() erases and writes.
+    bool operator!=(const UserPresets& a) const { return memcmp(this, &a, sizeof *this) != 0; }
+};
+
+// +4: PersistentStorage prefixes its State word.
+static_assert(sizeof(UserPresets) + 4 <= QSPI_SECTOR_BYTES,
+              "user presets must fit one QSPI sector");
+
 static bool     gSettingsSavePending = false;  // RAM copy differs from what was last saved
 static uint32_t gSettingsChangedAtMs = 0;      // System::GetNow() of the last change
 
@@ -117,6 +149,8 @@ struct PedalState {
     // loop, so these must be re-read from memory on every access.
     volatile bool bypass                 = true;
     volatile bool triggerPresetChange    = false;  // set by the callback on an FS2 tap
+    volatile bool triggerPresetRestore   = false;  // set by the callback on the FS1+FS2 5 s hold
+    volatile bool saveSnapshotReady      = false;  // callback published gSaveSnapshot; main loop clears
     volatile bool presetChangeInProgress = false;  // main loop is loading a preset: pass through
     volatile bool knobResetPending       = false;  // main loop changed the preset; re-snapshot knobs
     int currentPreset = 0;  // main loop only
@@ -129,13 +163,14 @@ struct PedalState {
     BlinkPattern blinkPattern  = {};
     bool         outputLevelsDirty = true;  // DryOut/EarlyOut/MainOut changed
 
+    // Audio callback, and loadPreset() behind the presetChangeInProgress gate.
+    int   prevReverseGrainSamples = 0;      // last window length written to reverseDelay
+    float reverseDelayNorm        = 0.0f;   // set by loadPreset(); current value of the
+                                            // "reverse.delay" target, which has no params[] slot
+
     // Audio callback only.
     float prevNumDelayLines       = 0.0f;   // 0 forces the first callback to write LineCount
     bool  prevBloom               = false;
-    int   prevReverseGrainSamples = 0;      // last window length written to reverseDelay
-    float reverseDelayNorm = REVERSE_GRAIN_NORM; // normalized reverse-window value; the current
-                                                 // value of the "reverse.delay" target, which
-                                                 // has no params[] slot
     float reverseMix   = 0.0f;  // smoothed 0..1 crossfade for the reverse voice
     float samplesPerMs = 0.0f;  // sampleRate / 1000, precomputed for the reverse-time knob
     // Derived from DryOut/EarlyOut/MainOut; recomputed only when those change.
@@ -161,6 +196,15 @@ static CloudSeed::ReverseDelay reverseDelay;
 
 // Persistent Storage Declaration. Using type Settings and passed the device's qspi handle
 static PersistentStorage<Settings> SavedSettings(hw.seed.qspi);
+
+// User preset edits, one slot per preset (see UserPresets).
+static PersistentStorage<UserPresets> SavedUserPresets(hw.seed.qspi);
+
+// FS1 5 s hold: the callback snapshots the engine into gSaveSnapshot on the next
+// block the preset-change gate is open, then publishes it with saveSnapshotReady.
+static bool       gSaveRequested = false;  // audio callback only
+static UserPreset gSaveSnapshot;           // callback writes while !saveSnapshotReady;
+                                           // main loop reads while it is set
 
 static BlinkState led2BlinkState;
 
@@ -242,19 +286,46 @@ static bool loadPresetBank(char* err, int errLen) {
  * Presets
  */
 
+// Antilog reverse-window mapping via the same ValueTables pattern the engine uses for
+// Parameter::LineDelay (CloudSeed/ReverbController.h:114): min + table * span.
+// Response3Oct is (8^x - 1) / 7 normalized, so 0.0 -> 20ms, 0.4771 -> ~500ms, 1.0 -> 2000ms.
+static float reverseWindowMs(float norm) {
+    return REVERSE_TIME_MIN_MS
+         + AudioLib::ValueTables::Get(norm, AudioLib::ValueTables::Response3Oct)
+           * (REVERSE_TIME_MAX_MS - REVERSE_TIME_MIN_MS);
+}
+
+// Sets the reverse window from a normalized "reverse.delay" value. Called by the
+// audio callback (knob) and by loadPreset() (only while presetChangeInProgress is
+// set, or before audio starts), so the two never run concurrently.
+static void applyReverseWindow(float norm) {
+    const int grainSamples = (int)(reverseWindowMs(norm) * state.samplesPerMs);
+    if (grainSamples != state.prevReverseGrainSamples) {
+        reverseDelay.SetGrainSamples(grainSamples);
+        state.prevReverseGrainSamples = grainSamples;
+    }
+    state.reverseDelayNorm = norm;
+}
+
+// Loads a preset: the user's saved edit if that slot holds one, else the factory
+// values from presets.toml.
 static void loadPreset(int presetIndex) {
     // Validate preset index
     if (presetIndex < 0 || presetIndex >= gPresets.count) {
         presetIndex = 0;  // Default to first preset if invalid
     }
 
-    const PresetData& p = gPresets.presets[presetIndex];
+    const PresetData& p      = gPresets.presets[presetIndex];
+    const UserPreset& u      = SavedUserPresets.GetSettings().presets[presetIndex];
+    const bool        edited = u.valid == USER_PRESET_VALID;
 
     reverb->ClearBuffers();
-    reverb->LoadPreset(p.params);
+    reverb->LoadPreset(edited ? u.params : p.params);
+    applyReverseWindow(edited ? u.reverseDelay : p.reverseDelay);
 
     // Apply the preset's non-parameter configuration to pedal state. This is the
     // only place gPresets is read after boot; the audio callback uses the copies.
+    // None of it is user-editable, so it always comes from presets.toml.
     memcpy(state.knobMap, p.knobMap, sizeof state.knobMap);
     state.maxDelayLines = p.maxDelayLines;
     state.blinkPattern  = BlinkPattern{p.blinks, p.onDurationMs, p.offDurationMs,
@@ -262,9 +333,17 @@ static void loadPreset(int presetIndex) {
     state.outputLevelsDirty = true;
 }
 
-static void cyclePreset() {
-    state.currentPreset = (state.currentPreset + 1) % gPresets.count;
-    loadPreset(state.currentPreset);
+// Main loop only. Loads `index` behind the presetChangeInProgress gate; parks the knobs first.
+static void loadPresetGated(int index) {
+    state.presetChangeInProgress = true;
+    // Park the knobs before the load so no callback during it can push a stale
+    // position into the incoming preset.
+    state.knobResetPending       = true;
+    std::atomic_signal_fence(std::memory_order_seq_cst);  // gate closed before any preset write
+    state.currentPreset = index;
+    loadPreset(index);
+    std::atomic_signal_fence(std::memory_order_seq_cst);  // preset fully written before reopening
+    state.presetChangeInProgress = false;
 }
 
 /*
@@ -281,6 +360,27 @@ static void loadSettings() {
         (s.currentPreset >= 0 && s.currentPreset < gPresets.count) ? s.currentPreset : 0;
     state.bypass = s.bypass;
     loadPreset(state.currentPreset);
+}
+
+// FNV-1a over the loaded code + read-only data. Any change to code or presets.toml
+// changes it, so saved edits never outlive the firmware that wrote them.
+static uint32_t firmwareImageHash() {
+    uint32_t h = 2166136261u;
+    for (const uint32_t* p = _stext; p < _etext; ++p) {
+        h ^= *p;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static void initUserPresets() {
+    const uint32_t hash     = firmwareImageHash();
+    UserPresets    defaults = {};
+    defaults.firmwareHash   = hash;
+    SavedUserPresets.Init(defaults, USER_PRESETS_QSPI_OFFSET);
+    // Edits written by a different firmware image are discarded (one sector erase).
+    if (SavedUserPresets.GetSettings().firmwareHash != hash)
+        SavedUserPresets.RestoreDefaults();
 }
 
 // Main loop only. Mirrors pedal state into the RAM copy of the settings and writes
@@ -302,25 +402,10 @@ static void serviceSettingsSave() {
     }
 }
 
-// Antilog reverse-window mapping via the same ValueTables pattern the engine uses for
-// Parameter::LineDelay (CloudSeed/ReverbController.h:114): min + table * span.
-// Response3Oct is (8^x - 1) / 7 normalized, so 0.0 -> 20ms, 0.5 -> ~537ms, 1.0 -> 2000ms.
-static float reverseWindowMs(float norm) {
-    return REVERSE_TIME_MIN_MS
-         + AudioLib::ValueTables::Get(norm, AudioLib::ValueTables::Response3Oct)
-           * (REVERSE_TIME_MAX_MS - REVERSE_TIME_MIN_MS);
-}
-
 // Writes one knob value to its mapped destination.
 static void applyKnobTarget(const KnobTarget& target, float value) {
     if (target.kind == KnobTarget_ReverseDelay) {
-        const float reverseMs    = reverseWindowMs(value);
-        const int   grainSamples = (int)(reverseMs * state.samplesPerMs);
-        if (grainSamples != state.prevReverseGrainSamples) {
-            reverseDelay.SetGrainSamples(grainSamples);
-            state.prevReverseGrainSamples = grainSamples;
-        }
-        state.reverseDelayNorm = value;
+        applyReverseWindow(value);
         return;
     }
 
@@ -438,6 +523,35 @@ static void updateBlinkState() {
     }
 }
 
+static bool     gConfirmActive  = false;  // main loop only
+static uint32_t gConfirmStartMs = 0;
+
+// Main loop only: starts the save/restore confirmation blink.
+static void startConfirmBlink() {
+    gConfirmActive  = true;
+    gConfirmStartMs = System::GetNow();
+}
+
+// Drives LED1+LED2 together through CONFIRM_BLINKS on/off cycles, shown even when
+// bypassed. Returns false once idle; on completion restores LED1 to the bypass state
+// and hands LED2 back to updateBlinkState(), which restarts the preset pattern.
+static bool updateConfirmBlink() {
+    if (!gConfirmActive)
+        return false;
+    const uint32_t step = (System::GetNow() - gConfirmStartMs) / CONFIRM_BLINK_MS;
+    if (step >= 2u * CONFIRM_BLINKS) {
+        gConfirmActive = false;
+        state.led1.Set(state.bypass ? 0.0f : 1.0f);
+        state.led2.Set(0.0f);
+        led2BlinkState.active = false;
+        return false;
+    }
+    const float level = (step % 2u == 0u) ? 1.0f : 0.0f;
+    state.led1.Set(level);
+    state.led2.Set(level);
+    return true;
+}
+
 /*
  * Main audio callback
  */
@@ -452,20 +566,28 @@ static float gReverbInputBuffer[AUDIO_BUFFER_SIZE];
 static void processFootswitches() {
     // Each accessor is read exactly once per callback: libdaisy's edge flags are only
     // valid for the update in which they occur (hid/switch.h:62-66).
+    const FootswitchEvents ev = gFootswitches.Update(
+        hw.switches[BYPASS_FOOTSWITCH].Pressed(), hw.switches[BYPASS_FOOTSWITCH].FallingEdge(),
+        hw.switches[PRESET_FOOTSWITCH].Pressed(), hw.switches[PRESET_FOOTSWITCH].FallingEdge());
 
-    // (De-)Activate bypass and toggle LED when the left footswitch is released
-    if (hw.switches[BYPASS_FOOTSWITCH].FallingEdge()) {
+    // FS1 released (not after a save hold, not part of a chord): toggle bypass.
+    if (ev.toggleBypass) {
         state.bypass = !state.bypass;
         state.led1.Set(state.bypass ? 0.0f : 1.0f);
     }
 
-    // Holding the preset footswitch is the secondary-bank gesture. Its release cycles
-    // the preset (actual change happens in the main loop) only if no secondary knob
-    // wrote a value during the hold.
-    if (gPresetFs.Update(hw.switches[PRESET_FOOTSWITCH].Pressed(),
-                         hw.switches[PRESET_FOOTSWITCH].FallingEdge())) {
+    // FS2 released with no secondary knob write during the hold: next preset (the
+    // actual change happens in the main loop).
+    if (ev.cyclePreset)
         state.triggerPresetChange = true;
-    }
+
+    // FS1 held 5 s: snapshot the engine into the current preset (audioCallback()).
+    if (ev.savePreset)
+        gSaveRequested = true;
+
+    // FS1 + FS2 held 5 s: restore the current preset to factory (main loop).
+    if (ev.restorePreset)
+        state.triggerPresetRestore = true;
 }
 
 // Every reverb write lives here, and the caller skips it while the main loop is
@@ -490,7 +612,7 @@ static void updateEngineControls(int bank, const float* knobPositions) {
     // A secondary knob that wrote during this hold turns the FS2 release into a
     // no-op. Entering bank 1 re-parks (zero writes), so the press itself never counts.
     if (bank == 1 && knobWriteCount > 0)
-        gPresetFs.MarkEdited();
+        gFootswitches.MarkEdited();
 
     // SWITCH_1: off = 2 delay lines, on = the preset's max. Both candidates are exact
     // copies, so != is an exact change test.
@@ -589,7 +711,18 @@ static void audioCallback(AudioHandle::InputBuffer  in,
     for (int i = 0; i < kKnobCount; i++)
         knobPositions[i] = hw.knob[kKnobIndex[i]].Value();
     // Holding the preset footswitch selects bank 1 until its release edge.
-    updateEngineControls(gPresetFs.Held() ? 1 : 0, knobPositions);
+    updateEngineControls(gFootswitches.PresetHeld() ? 1 : 0, knobPositions);
+
+    // FS1 save hold: snapshot here, where the gate is open, so a half-loaded preset
+    // is never captured. LineCount/isReverse come along; LoadPreset() skips both.
+    if (gSaveRequested && !state.saveSnapshotReady) {
+        memcpy(gSaveSnapshot.params, reverb->GetAllParameters(), sizeof gSaveSnapshot.params);
+        gSaveSnapshot.reverseDelay = state.reverseDelayNorm;
+        gSaveSnapshot.valid        = USER_PRESET_VALID;
+        gSaveRequested             = false;
+        std::atomic_signal_fence(std::memory_order_seq_cst);  // snapshot written before publishing
+        state.saveSnapshotReady    = true;
+    }
     refreshOutputLevels();
 
     // SWITCH_3: reverse voice on/off. The reverse window length is a knob_map
@@ -657,12 +790,10 @@ int main(void) {
     reverb = new CloudSeed::ReverbController(sampleRate);
 
     // Initialize reverse delay stage (records dry input or reverb output for backward
-    // playback). Init() clears the buffer.
-    const int bootGrainSamples =
-        (int)(sampleRate * reverseWindowMs(REVERSE_GRAIN_NORM) / 1000.0f);
-    reverseDelay.Init(reverseDelayBuffer, REVERSE_BUFFER_SIZE, bootGrainSamples);
-    state.samplesPerMs            = sampleRate / 1000.0f;
-    state.prevReverseGrainSamples = bootGrainSamples;
+    // playback). Init() clears the buffer; loadSettings() applies the preset's
+    // reverse.delay window.
+    reverseDelay.Init(reverseDelayBuffer, REVERSE_BUFFER_SIZE, 0);
+    state.samplesPerMs = sampleRate / 1000.0f;
 
     // Give the knobs real ADC smoothing: libdaisy's default slew computes to a
     // pass-through at this callback rate (see hid/ctrl.cpp:16).
@@ -676,6 +807,10 @@ int main(void) {
         true               // bypass (default to bypassed/silent on first boot)
     };
     SavedSettings.Init(defaultSettings);
+
+    // User preset edits (wiped if a different firmware image saved them). Must
+    // precede loadSettings(), whose loadPreset() reads them.
+    initUserPresets();
 
     // Load settings from persistent storage (with resilience to failures)
     loadSettings();
@@ -702,27 +837,39 @@ int main(void) {
     hw.StartAudio(audioCallback);
 
     while (true) {
+        // Save and restore precede the preset change below: a snapshot pending across
+        // the blocking flash write belongs to the preset loaded when it was taken.
+        if (state.saveSnapshotReady) {
+            std::atomic_signal_fence(std::memory_order_seq_cst);
+            SavedUserPresets.GetSettings().presets[state.currentPreset] = gSaveSnapshot;
+            std::atomic_signal_fence(std::memory_order_seq_cst);
+            state.saveSnapshotReady = false;
+            SavedUserPresets.Save();  // blocking QSPI erase+write; audio keeps running
+            startConfirmBlink();
+        }
+        if (state.triggerPresetRestore) {
+            state.triggerPresetRestore = false;
+            SavedUserPresets.GetSettings().presets[state.currentPreset] = UserPreset{};
+            loadPresetGated(state.currentPreset);  // factory sound now; also drops unsaved knob tweaks
+            SavedUserPresets.Save();                // no erase if the slot was already empty
+            startConfirmBlink();
+        }
+
         // Preset changes run here, not in the audio callback. The callback passes
         // audio through while presetChangeInProgress is set, so it never sees a
         // half-loaded preset; loadPreset() is synchronous, so the gate reopens as soon
         // as it returns.
         if (state.triggerPresetChange) {
-            state.triggerPresetChange    = false;
-            state.presetChangeInProgress = true;
-            // Park the knobs before the load so no callback during it can push a
-            // stale position into the incoming preset.
-            state.knobResetPending       = true;
-            std::atomic_signal_fence(std::memory_order_seq_cst);  // gate closed before any preset write
-            cyclePreset();
+            state.triggerPresetChange = false;
+            loadPresetGated((state.currentPreset + 1) % gPresets.count);
             startBlinkSequence(state.blinkPattern);
-            std::atomic_signal_fence(std::memory_order_seq_cst);  // preset fully written before reopening
-            state.presetChangeInProgress = false;
         }
 
         serviceSettingsSave();
 
-        // Update LED blink state machine
-        updateBlinkState();
+        // LED1+LED2 save/restore confirmation, else the LED2 preset pattern
+        if (!updateConfirmBlink())
+            updateBlinkState();
 
         keepCoreBusy();
     }

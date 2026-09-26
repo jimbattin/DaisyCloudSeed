@@ -189,14 +189,16 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
     }
 
     // Rejects unknown groups, and also a parameter or array written directly
-    // under [preset.params] instead of inside one of the eight groups.
-    const char* allowedGroups[kGroupCount];
+    // under [preset.params] instead of inside one of the groups. "reverse" is
+    // the ninth group; it holds no Parameter and is parsed separately below.
+    const char* allowedGroups[kGroupCount + 1];
     for (int g = 0; g < kGroupCount; g++)
         allowedGroups[g] = kGroups[g].name;
+    allowedGroups[kGroupCount] = "reverse";
 
     char context[48];
     snprintf(context, sizeof context, "preset %d: [preset.params]: ", index);
-    if (!rejectUnknownKeys(params, allowedGroups, kGroupCount, context, err,
+    if (!rejectUnknownKeys(params, allowedGroups, kGroupCount + 1, context, err,
                            errLen))
         return false;
 
@@ -299,6 +301,39 @@ bool parseParams(const toml_table_t* preset, int index, PresetData& out,
             return false;
         }
     }
+
+    // [preset.params.reverse] delay: the reverse-window length (knob target
+    // "reverse.delay"). Not a Parameter, so it bypasses findParameter().
+    const toml_table_t* reverse = toml_table_in(params, "reverse");
+    if (!reverse)
+    {
+        snprintf(err, errLen, "preset %d: missing [preset.params.reverse]", index);
+        return false;
+    }
+
+    static const char* const kReverseKeys[] = {"delay"};
+    snprintf(context, sizeof context, "preset %d: [preset.params.reverse]: ",
+             index);
+    if (!rejectUnknownKeys(reverse, kReverseKeys, 1, context, err, errLen))
+        return false;
+
+    double delay = 0.0;
+    if (!readNumber(reverse, "delay", delay))
+    {
+        snprintf(err, errLen, "preset %d: missing or non-numeric 'reverse.delay'",
+                 index);
+        return false;
+    }
+
+    // Rejects NaN too: reverseWindowMs() indexes ValueTables::Response3Oct
+    // with the raw value.
+    if (!(delay >= 0.0 && delay <= 1.0))
+    {
+        snprintf(err, errLen, "preset %d: 'reverse.delay' = %g out of range 0..1",
+                 index, delay);
+        return false;
+    }
+    out.reverseDelay = (float)delay;
 
     return true;
 }

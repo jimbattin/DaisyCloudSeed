@@ -30,6 +30,8 @@ struct PresetData {
     uint32_t pauseAfterMs;
     float    maxDelayLines;
     float    params[(int)Parameter::Count];
+    // [preset.params.reverse] delay: normalized reverse-window length (knob target "reverse.delay")
+    float    reverseDelay;
     // [bank][knob]; bank 0 = primary, bank 1 = secondary (preset footswitch (FS2) held)
     KnobTarget knobMap[kKnobBanks][kKnobCount];
 };

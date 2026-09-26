@@ -14,7 +14,7 @@
 #   * Every preset needs a [preset.knob_map] with all twelve knobN_a / knobN_b
 #     keys. Each value is a quoted "group.Parameter" naming a parameter from that
 #     preset's own [preset.params.<group>] section, or "reverse.delay" for the
-#     reverse-delay window length. Secondary (_b) functions are reachable by
+#     reverse-delay window length ([preset.params.reverse] delay). Secondary (_b) functions are reachable by
 #     holding the preset footswitch (FS2) down while turning the knob.
 #   * input.HighPass / input.LowPass are enabled automatically the first time
 #     their knob is turned; every other switch-gated parameter (shelves, cutoff,
@@ -86,6 +86,9 @@
 #     PredelayOut  pre-delay tap level, 2-decade curve
 #     EarlyOut     early reflection level, 2-decade curve
 #     MainOut      late reverb level, 2-decade curve
+#
+#   [preset.params.reverse]  Reverse voice (SWITCH_3 on; SWITCH_4 picks routing).
+#     delay   reverse window length, 20-2000 ms (3-octave curve; 0.4771 = 500 ms)
 #
 
 # --------------------------------------------------------------------------
@@ -182,6 +185,10 @@ PredelayOut = 0.0
 EarlyOut    = 0.77999997138977051
 MainOut     = 0.74500006437301636
 
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
+
 # --------------------------------------------------------------------------
 [[preset]]
 name = "Dull Echos"
@@ -275,6 +282,10 @@ DryOut      = 1.0
 PredelayOut = 0.0
 EarlyOut    = 0.77999997138977051
 MainOut     = 0.74500006437301636
+
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -370,6 +381,10 @@ PredelayOut = 0.0
 EarlyOut    = 0.8200000524520874
 MainOut     = 0.79500007629394531
 
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
+
 # --------------------------------------------------------------------------
 [[preset]]
 name = "Medium Space"
@@ -463,6 +478,10 @@ DryOut      = 1.0
 PredelayOut = 0.0
 EarlyOut    = 0.699999988079071
 MainOut     = 0.84499984979629517
+
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -558,6 +577,10 @@ PredelayOut = 0.0
 EarlyOut    = 0.64500010013580322
 MainOut     = 0.63000005483627319
 
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
+
 # --------------------------------------------------------------------------
 [[preset]]
 name = "Rubi Ka Fields"
@@ -651,6 +674,10 @@ DryOut      = 0.88499999046325684
 PredelayOut = 0.0
 EarlyOut    = 0.0
 MainOut     = 0.90999990701675415
+
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -746,6 +773,10 @@ PredelayOut = 0.0
 EarlyOut    = 0.8599998950958252
 MainOut     = 0.90500003099441528
 
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
+
 # --------------------------------------------------------------------------
 [[preset]]
 name = "90s Are Back"
@@ -839,6 +870,10 @@ DryOut      = 0.9449997544288635
 PredelayOut = 0
 EarlyOut    = 0.7250000238418579
 MainOut     = 0.6050001382827759
+
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
 
 # --------------------------------------------------------------------------
 [[preset]]
@@ -934,6 +969,10 @@ PredelayOut = 0.0
 EarlyOut    = 0.0
 MainOut     = 0.95499974489212036
 
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
+
 # --------------------------------------------------------------------------
 [[preset]]
 name = "Dark Plate"
@@ -1027,3 +1066,7 @@ DryOut      = 0.0
 PredelayOut = 0.0
 EarlyOut    = 0.0
 MainOut     = 0.95499974489212036
+
+# Reverse delay: window length of the reverse voice (SWITCH_3); knob target "reverse.delay".
+[preset.params.reverse]
+delay = 0.4771
