@@ -558,6 +558,28 @@ allocating - the two uses never overlap in time.
 
 ## Build System
 
+### Checkout and prerequisites
+
+`libdaisy/`, `DaisySP/` and `Terrarium/` are git submodules (`.gitmodules`); the build reads
+all three (`Makefile:16-24`, `:42`), so a checkout without them fails at the first `include`.
+
+```bash
+git clone --recurse-submodules https://github.com/jimbattin/DaisyCloudSeed.git
+# or, in an existing clone / after a pull that moves a submodule:
+git submodule update --init --recursive
+```
+
+The superproject pins exact commits: libdaisy `v6.0.0`, DaisySP `V1.0.0`, Terrarium `main` at
+`cd6c80d`. The `branch =` values in `.gitmodules` are those tag names, not branches, so never use
+`git submodule update --remote`: it would move the submodules off the pinned commits. `--recursive`
+also fetches `libdaisy/tests/googletest` and `DaisySP/DaisySP-LGPL`; the firmware needs neither
+(DaisySP's `make` builds the LGPL library only if it is present, `DaisySP/Makefile:227-230`).
+
+Tools: the Daisy Toolchain (`arm-none-eabi-gcc`, `make`, `dfu-util`; this tree builds with Arm GNU
+Toolchain 13.3.Rel1) and a host `gcc`/`g++` (`HOSTCC`/`HOSTCXX`, `Makefile:50-51`) - plain `make`
+needs the host compilers too, because it builds `preset_check` to validate presets.toml.
+Then `make libs` once (and after every submodule update), then `make`.
+
 ### Building Libraries
 
 ```bash
@@ -578,7 +600,7 @@ cd DaisySP && make
 make
 ```
 
-`make` also runs `$(MAKE) -C CloudSeed` on every invocation (`Makefile:31-38`): the sub-make
+`make` also runs `$(MAKE) -C CloudSeed` on every invocation (`Makefile:32-39`): the sub-make
 is incremental and rebuilds `libcloudseed.a` only when a library source changed, and the ELF
 relinks only when the archive's mtime moved. A CloudSeed edit therefore never needs `make libs`.
 
@@ -626,7 +648,7 @@ audio.
 make test
 ```
 
-Builds five host executables into `build/` with `HOSTCXX` (`Makefile:80-111`) and runs them;
+Builds five host executables into `build/` with `HOSTCC`/`HOSTCXX` (`Makefile:80-111`) and runs them;
 no ARM toolchain or firmware build is involved. Each prints `<suite>: N checks, 0 failed` and
 exits non-zero on any failed `CHECK()` ([tests/check.h](tests/check.h)):
 - `knob_bank_test` - `KnobBank` parking, move threshold, 50-block takeover glide, apply
@@ -671,7 +693,7 @@ make program-dfu
 
 Both targets come from `libdaisy/core/Makefile:343-347` and require `dfu-util`. A `BOOT_SRAM`
 build cannot be flashed with `make program` (openocd) - libdaisy errors out on that path
-(`libdaisy/core/Makefile:335-336`). Same procedure as `README.md:50-59`.
+(`libdaisy/core/Makefile:335-336`). Same procedure as `README.md:71-80`.
 
 ### Compiler Configuration
 
@@ -1132,13 +1154,13 @@ per-call lookup function. Both functions only `Set()` LED2; the audio callback's
    Both ramp the reverse via a smoothed mix toward `reverseTarget`, kept in a local during the
    sample loop and stored back to `state.reverseMix` afterwards, so the `"reverse.enabled"`
    toggle switches click-free (engine in `CloudSeed/ReverseDelay.h`)
-8. If bypassed, overwrite the output with the input (`:487-488`)
+8. If bypassed, overwrite the output with the input (`src/cloudseed.cpp:487-488`)
 
 When `state.bypass` is set, output is a straight copy of the input — but the reverb (and the
 reverse mix) is still processed, deliberately, to suppress an audible 1 kHz whine (the
-`reverb->Process()` call inside whichever render helper runs, `:403-435`). When
+`reverb->Process()` call inside whichever render helper runs, `src/cloudseed.cpp:403-435`). When
 `state.presetChangeInProgress` is set, the reverb is skipped entirely and the input is passed
-through (`:448-451`).
+through (`src/cloudseed.cpp:448-451`).
 
 **CloudSeed Main Loop** (`main()` while loop at `src/cloudseed.cpp:577-613` - free-running, no sleep):
 1. **Save / restore** (`:580-594`): a published `gSaveSnapshot` is copied into the current
@@ -1292,8 +1314,9 @@ blink (`ServiceConfirmBlink()`, `src/pedal_leds.cpp:124-139`).
 
 See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the concrete list of performance/correctness
 fixes applied to the CloudSeed DSP (FPU denormal handling, parameter storage, hot-loop
-modulo/precision fixes, placement-new/delete destructor safety, and build flags), each
-with the exact file/line and pattern it addresses.
+modulo/precision fixes, placement-new/delete destructor safety, build flags, the redundant
+bypass copy, allocation-free parameter updates, and engine state defined before its first
+read), each with the exact file/line and pattern it addresses.
 
 ## Further Resources
 

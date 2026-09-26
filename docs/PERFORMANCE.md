@@ -187,11 +187,40 @@ scalar-only FPU gives GCC nothing to vectorize with. Code size: `-O3` now inline
 `MultitapDiffuser::Update()` into each of its `SetParameter` cases, adding 7.5 KB of SRAM
 (`ReverbChannel::SetParameter` 8,128 → 16,416 B).
 
+## 10. Engine state defined before its first read
+
+**Files**: `CloudSeed/ReverbChannel.h`, `CloudSeed/DelayLine.h`, `CloudSeed/AllpassDiffuser.h`
+
+Several engine members were read before anything had written them. The `ReverbController` is
+heap-allocated and each `DelayLine` is placement-new'd into the SDRAM pool, whose
+`.sdram_bss` section is `NOLOAD` and never zeroed (`libdaisy/core/STM32H750IB_sram.lds:172`),
+so those reads returned whatever the memory held:
+- `SetParameter(DiffusionEnabled)` and `SetParameter(LateDiffusionEnabled)` compare the new
+  value with the old `diffuserEnabled` / `DelayLine::DiffuserEnabled` to decide whether to clear
+  the diffuser (`CloudSeed/ReverbChannel.h:196`, `:233`); the preset load's first write compared
+  against garbage.
+- `AllpassDiffuser`'s constructor called `Update()`, which reads `delay`, and
+  `SetSamplerate()` → `SetModRate(modRate)` before either was set. Built over memory filled
+  with `0xBE` at host `-O0`, its two stages got `SampleDelay` −932,195,305 and −519,973,246,
+  which would index far outside the 19,200-sample allpass buffer if a block ran before the
+  preset load.
+
+**Fix**: the constructors give these members a defined starting value:
+`CloudSeed/ReverbChannel.h:85-91`, `CloudSeed/DelayLine.h:44-51`, and
+`CloudSeed/AllpassDiffuser.h:36-39` (`delay = 100`, `modRate = 0`, matching the stage
+defaults `ModulatedAllpass` is built with). The line-seed series that `UpdateLines()` reads
+before `DelaySeed` is applied is zero-initialised by `SeedSeries` (§9).
+
+**Result**: the preset load still overwrites every one of these before audio starts, so the
+sound is unchanged; the same `0xBE` check now yields `SampleDelay` 85 and 47, `ModRate` 0 at
+`-O0` and `-O1`.
+
 ## Verification performed
 
-1. **Build**: `make libs && make clean && make` completes
-   with no errors and produces `build/cloudseed.bin`/`.elf`/`.hex`. Memory usage:
-   SDRAM 77.10% of 64MB, SRAM (`.text`+`.data`) 28.48% of 480KB `BOOT_SRAM`.
+1. **Build** (at the time of §1-§8; current memory figures are in CLAUDE.md, "Memory
+   Usage"): `make libs && make clean && make` completes with no errors and produces
+   `build/cloudseed.bin`/`.elf`/`.hex`. Memory usage then: SDRAM 77.10% of 64MB, SRAM
+   (`.text`+`.data`) 28.48% of 480KB `BOOT_SRAM`.
 2. **Host-side behavioral smoke test**: a throwaway harness linked `ReverbController`
    against a `malloc`-backed stand-in for `custom_pool_allocate`, drove `LineCount`
    through 1-5, and processed an impulse-then-silence buffer through the pre-fix

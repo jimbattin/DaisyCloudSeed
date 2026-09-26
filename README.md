@@ -40,12 +40,33 @@ GuitarML's [Releases](https://github.com/GuitarML/DaisyCloudSeed/releases) page 
 firmware, which has none of this fork's features; build this fork from source as below.
 
 ## Getting started
-Build the daisy libraries and CloudSeed from the repo root (after installing the Daisy Toolchain
-and running `git submodule update --init --recursive`):
+You need:
+- The [Daisy Toolchain](https://github.com/electro-smith/DaisyWiki/wiki/1.-Setting-Up-Your-Development-Environment)
+  (`arm-none-eabi-gcc`, `make`, `dfu-util`)
+- A host C/C++ compiler (`gcc`/`g++` by default, or set `HOSTCC`/`HOSTCXX`): `make` builds a
+  small host tool that validates presets.toml before it is embedded in the firmware
+
+libdaisy, DaisySP and Terrarium are git submodules, pinned to exact commits (libdaisy v6.0.0,
+DaisySP V1.0.0). The build fails without them, so clone recursively:
+```
+git clone --recurse-submodules https://github.com/jimbattin/DaisyCloudSeed.git
+cd DaisyCloudSeed
+```
+In a clone made without `--recurse-submodules`, or after pulling a change that moves a
+submodule, run:
+```
+git submodule update --init --recursive
+```
+Don't use `git submodule update --remote`: it would move the submodules off the pinned commits
+the code is built against.
+
+Then build the daisy libraries once, and the firmware, from the repo root:
 ```
 make libs
 make
 ```
+`make` rebuilds the CloudSeed library itself when its sources change; `make libs` is only needed
+again after a submodule update. `make test` runs the host unit tests.
 
 Then flash your terrarium with the following commands (or use the [Electrosmith Web Programmer](https://electro-smith.github.io/Programmer/))
 **NOTE** This fork (of a fork) uses BOOT_SRAM, so the Daisy bootloader must be flashed once
